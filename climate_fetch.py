@@ -1,75 +1,184 @@
 """
-Fetch daily climate for the three northern-Ghana study regions from NASA POWER
-and build a climatological "typical year" (365-day day-of-year means) per region.
+Download daily NASA POWER climate for Upper West Region, Ghana.
 
-  Regions (representative site = regional capital / research site):
-  upper_east -> Navrongo (10.90 N, 1.09 W)
-  upper_west -> Wa       (10.06 N, 2.50 W)
-  northern   -> Tamale   ( 9.40 N, 0.84 W)
-  
-  "upper_east": dict(name="Navrongo", lat=10.90, lon=-1.09),
-    "upper_west": dict(name="Wa",       lat=10.06, lon=-2.50),
- 
+Purpose:
+    Generate the actual daily climate time series required for the
+    EMOD malaria burn-in.
 
-NASA POWER daily point API (no key): T2M (air temp C), RH2M (rel humidity %),
-PRECTOTCORR (bias-corrected precip mm/day).
+Climate period:
+    1981-01-01 to 2011-12-31
 
-Outputs per region in climate/:
-  <region>_daily_raw.csv    - full daily record
-  <region>_climatology.csv  - 365-day typical year (doy, airtemp, humidity, rainfall)
-  
-  
+NASA POWER daily meteorological data are available from 1981 onward.
 """
+
 import os
 import numpy as np
 import pandas as pd
 import requests
 
-SITES = {
-    
-    "upper_west": dict(name="Wa",       lat=10.06, lon=-2.50)
-    
-}
-START, END = "20150101", "20251231"          # 10-year climatological base period
-OUTDIR = os.path.join(os.path.dirname(__file__), "climate")
-PARAMS = ["T2M", "RH2M", "PRECTOTCORR"]
+# =============================================================================
+# SITE
+# =============================================================================
 
+SITES = {
+    "upper_west": {"name": "Upper West", "lat": 10.060074, "lon": -2.509891},
+}
+
+# =============================================================================
+# CLIMATE PERIOD
+# =============================================================================
+
+# IMPORTANT:
+# NASA POWER daily meteorological data begin in 1981.
+#
+# Do NOT use 1962 here because POWER does not provide daily meteorological
+# observations for that period.
+
+START = "19810101"
+END   = "20251231"
+
+# =============================================================================
+# OUTPUT
+# =============================================================================
+
+OUTDIR = os.path.join(os.path.dirname(__file__), "climate")
+
+# =============================================================================
+# PARAMETERS REQUIRED BY EMOD
+# =============================================================================
+
+PARAMS = [
+    "T2M",          # air temperature, °C
+    "RH2M",         # relative humidity, %
+    "PRECTOTCORR",  # precipitation, mm/day
+]
+
+
+# =============================================================================
+# DOWNLOAD
+# =============================================================================
 
 def fetch(lat, lon):
-    url = ("https://power.larc.nasa.gov/api/temporal/daily/point"
-           f"?parameters={','.join(PARAMS)}&community=AG"
-           f"&longitude={lon}&latitude={lat}&start={START}&end={END}&format=JSON")
-    r = requests.get(url, timeout=120)
-    r.raise_for_status()
-    p = r.json()["properties"]["parameter"]
-    df = pd.DataFrame({k: p[k] for k in PARAMS})
+    url = (
+        "https://power.larc.nasa.gov/api/temporal/daily/point"
+        f"?parameters={','.join(PARAMS)}"
+        f"&community=AG"
+        f"&longitude={lon}"
+        f"&latitude={lat}"
+        f"&start={START}"
+        f"&end={END}"
+        f"&format=JSON"
+        f"&time-standard=UTC"
+    )
+
+    # print("\nDownloading climate data:")
+    # print(url)
+
+    response = requests.get(url, timeout=120)
+    response.raise_for_status()
+
+    data = response.json()
+    parameters = data["properties"]["parameter"]
+
+    df = pd.DataFrame({p: parameters[p] for p in PARAMS})
     df.index = pd.to_datetime(df.index, format="%Y%m%d")
-    df = df.replace(-999, np.nan).dropna()
-    return df.rename(columns={"T2M": "airtemp_C", "RH2M": "rh_pct", "PRECTOTCORR": "rain_mm"})
+
+    # NASA POWER missing value
+    df = df.replace(-999, np.nan)
+
+    # Sort chronologically
+    df = df.sort_index()
+
+    return df.rename(columns={
+        "T2M": "airtemp_C",
+        "RH2M": "rh_pct",
+        "PRECTOTCORR": "rain_mm",
+    })
 
 
-def climatology(df):
+# =============================================================================
+# QUALITY CONTROL
+# =============================================================================
+
+def quality_control(df):
+    df = df.copy()
+
+    # Remove impossible values
+    df.loc[(df["rh_pct"] < 0) | (df["rh_pct"] > 100), "rh_pct"] = np.nan
+    df.loc[df["rain_mm"] < 0, "rain_mm"] = np.nan
+
+    # Check missingness
+    missing = df.isna().sum()
+    # print("\nMissing values:")
+    # print(missing)
+
+    # Interpolate only short gaps.
+    # Do not blindly fill large missing periods.
+    df = df.interpolate(method="time", limit=3)
+
+    return df
+
+
+# =============================================================================
+# EMOD-FRIENDLY DAILY TABLE
+# =============================================================================
+
+def make_emod_daily(df):
     d = df.copy()
-    d["doy"] = d.index.dayofyear
-    d = d[d["doy"] <= 365]
-    clim = d.groupby("doy").mean(numeric_only=True).reset_index()
-    clim["airtemp"] = clim["airtemp_C"]
-    clim["humidity"] = (clim["rh_pct"] / 100.0).clip(0, 1)
-    clim["rainfall"] = clim["rain_mm"].clip(lower=0)
-    return clim[["doy", "airtemp", "humidity", "rainfall"]]
 
+    d["airtemp"] = d["airtemp_C"]
+    d["humidity"] = (d["rh_pct"] / 100.0).clip(lower=0, upper=1)
+    d["rainfall"] = d["rain_mm"].clip(lower=0)
+
+    d["year"] = d.index.year
+    d["month"] = d.index.month
+    d["day"] = d.index.day
+    d["date"] = d.index.strftime("%Y-%m-%d")
+
+    return d[["date", "year", "month", "day", "airtemp", "humidity", "rainfall"]]
+
+
+# =============================================================================
+# MAIN
+# =============================================================================
 
 def main():
     os.makedirs(OUTDIR, exist_ok=True)
-    print(f"{'region':12s} {'site':10s} {'ann.rain':>9s} {'T mean':>7s} {'RH min':>7s}")
-    for region, s in SITES.items():
-        df = fetch(s["lat"], s["lon"])
-        df.to_csv(os.path.join(OUTDIR, f"{region}_daily_raw.csv"))
-        clim = climatology(df)
-        clim.to_csv(os.path.join(OUTDIR, f"{region}_climatology.csv"), index=False)
-        print(f"{region:12s} {s['name']:10s} {clim.rainfall.sum():8.0f}mm "
-              f"{clim.airtemp.mean():6.1f}C {clim.humidity.min():6.2f}")
-    print("\nSaved per-region climatology CSVs to", OUTDIR)
+
+    for region, site in SITES.items():
+        #print("\n" + "=" * 70)
+        #print(f"Region: {site['name']}")
+        #print(f"Period: {START} - {END}")
+        #print("=" * 70)
+
+        # Download
+        df = fetch(site["lat"], site["lon"])
+        # print(f"Downloaded {len(df):,} daily records.")
+
+        # QC
+        df = quality_control(df)
+
+        # Save raw climate
+        raw_file = os.path.join(OUTDIR, f"{region}_daily_raw_1981_2025.csv")
+        df.to_csv(raw_file, index_label="date")
+
+
+        # Create EMOD-friendly table
+        emod_df = make_emod_daily(df)
+        emod_file = os.path.join(OUTDIR, f"{region}_daily_EMOD_1981_2025.csv")
+        emod_df.to_csv(emod_file, index=False)
+
+        # Summary
+        #print(f"\nSaved raw climate:\n  {raw_file}")
+        #print(f"\nSaved EMOD climate table:\n  {emod_file}")
+
+        #print("\nClimate summary:")
+        #print(f"  Start:       {df.index.min().date()}")
+        #print(f"  End:         {df.index.max().date()}")
+        #print(f"  Days:        {len(df):,}")
+        #print(f"  Mean temp:   {df['airtemp_C'].mean():.2f} °C")
+        #print(f"  Mean RH:     {df['rh_pct'].mean():.2f} %")
+        #print(f"  Annual rain: {df['rain_mm'].sum() / 31:.1f} mm/year")
 
 
 if __name__ == "__main__":

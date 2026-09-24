@@ -1,0 +1,186 @@
+{
+   "Defaults": {
+      "IndividualAttributes": {
+         "AgeDistribution": {
+            "DistributionValues": [
+               0,
+               0.0874071047257126,
+               0.16737703029028825,
+               0.24054255502934432,
+               0.3074826208089575,
+               0.3686613109892203,
+               0.4246989953576121,
+               0.47596861687986874,
+               0.522875857439861,
+               0.5657918836833704,
+               0.6050561581209166,
+               0.6409789502300984,
+               0.673845189729804,
+               0.7038827889943505,
+               0.7313967340232171,
+               0.7565694182395838,
+               0.7795999267083209,
+               0.800670843446059,
+               0.8199488968312877,
+               0.8375866300551988,
+               0.8537235049479931,
+               0.8684713425858462,
+               0.8819801447631247,
+               0.8943395212968485,
+               0.9056472694733465,
+               0.915992766949792,
+               0.9254579031519203,
+               0.9341176809019833,
+               0.9420406227370048,
+               0.9492816775343581,
+               0.9559142701362873,
+               0.9619824759265774,
+               0.9675343569769829,
+               0.9726138439176826,
+               0.9772611297725079,
+               0.981512933676782,
+               0.9854029390818465,
+               0.9889581498026758,
+               0.9922146658619191,
+               0.9951940927775798,
+               0.9979199629370703,
+               1.0000000000000013,
+               1.0000000000000013,
+               1.0000000000000013,
+               1.0000000000000013,
+               1.0000000000000013,
+               1.0000000000000013,
+               1.0000000000000013,
+               1.0000000000000013,
+               1.0000000000000013
+            ],
+            "ResultScaleFactor": 1,
+            "ResultValues": [
+               0,
+               894,
+               1788,
+               2682,
+               3576,
+               4469,
+               5363,
+               6257,
+               7151,
+               8045,
+               8939,
+               9833,
+               10727,
+               11620,
+               12514,
+               13408,
+               14302,
+               15196,
+               16090,
+               16984,
+               17878,
+               18771,
+               19665,
+               20559,
+               21453,
+               22347,
+               23241,
+               24135,
+               25029,
+               25922,
+               26816,
+               27710,
+               28604,
+               29498,
+               30392,
+               31286,
+               32180,
+               33073,
+               33967,
+               34861,
+               35755,
+               36649,
+               37543,
+               38437,
+               39331,
+               40224,
+               41118,
+               42012,
+               42906,
+               43800
+            ]
+         },
+         "AgeDistribution1": 0,
+         "AgeDistribution2": 18250,
+         "AgeDistributionFlag": 1,
+         "InitialPrevalence": 0,
+         "MortalityDistribution": {
+            "AxisNames": [
+               "gender",
+               "age"
+            ],
+            "AxisScaleFactors": [
+               1,
+               365
+            ],
+            "AxisUnits": [
+               "male=0,female=1",
+               "years"
+            ],
+            "PopulationGroups": [
+               [
+                  0,
+                  1
+               ],
+               [
+                  0
+               ]
+            ],
+            "ResultScaleFactor": 1,
+            "ResultUnits": "daily probability of dying",
+            "ResultValues": [
+               [
+                  0.00010959504641363832
+               ],
+               [
+                  0.00010959504641363832
+               ]
+            ]
+         },
+         "PrevalenceDist_Description": "Uniform draw from 0.2 to 0.2",
+         "PrevalenceDistribution1": 0.2,
+         "PrevalenceDistribution2": 0.2,
+         "PrevalenceDistributionFlag": 1,
+         "PrevalenceDistribution_Description": "Constant Initial Prevalence (0.2)",
+         "RiskDist_Description": "LogNormal distributed risk",
+         "RiskDistribution1": 0.0,
+         "RiskDistribution2": 1.6,
+         "RiskDistributionFlag": 5
+      },
+      "IndividualProperties": [],
+      "NodeAttributes": {
+         "Airport": 1,
+         "Altitude": 0,
+         "BirthRate": 0.0001095890410958904,
+         "Region": 1,
+         "Seaport": 1
+      }
+   },
+   "Metadata": {
+      "Author": "grace",
+      "DateCreated": "09/24/2026",
+      "IdReference": "Gridded world grump2.5arcmin",
+      "NodeCount": 1,
+      "Tool": "emod-api"
+   },
+   "Nodes": [
+      {
+         "IndividualAttributes": {},
+         "NodeAttributes": {
+            "FacilityName": "UpperWest_Region",
+            "InitialPopulation": 1000,
+            "Latitude": 10.43,
+            "Longitude": -2.21
+         },
+         "NodeID": 1
+      }
+   ]
+}

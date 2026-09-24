@@ -1,197 +1,214 @@
-import pathlib
 import os
-from functools import \
-    partial 
- 
-#idmtools   
-from idmtools.assets import Asset, AssetCollection  
-from idmtools.builders import SimulationBuilder
-from idmtools.core.platform_factory import Platform
-from idmtools.entities.experiment import Experiment
+import getpass
 
+import pandas as pd
+import matplotlib as mpl
 
-#emodpy
-from emodpy.emod_task import EMODTask
-import emod_api.config.default_from_schema_no_validation as dfs
-import emod_api.campaign as camp
-
-#emodpy-malaria
-#import emodpy_malaria.demographics.MalariaDemographics as Demographics
-from idmtools.builders import SimulationBuilder
-import emodpy_malaria.demographics.MalariaDemographics as Demographics
-import emod_api.demographics.PreDefinedDistributions as Distributions
-
-import numpy as np
+mpl.use('Agg')
+import matplotlib.pyplot as plt
+import seaborn as sns
+from idmtools_calibra.utilities.ll_calculators import beta_binomial
 import manifest
-from emodpy_malaria.reporters.builtin import *
 
-sim_years = 20
-num_seeds = 5
-sim_start_year=2000
+# Reference burnin_UpperWest.py directly rather than re-typing its parameter
+# space here. Importing it runs its module-level setup code (parameter-space
+# construction, the "STRICT 500-SIMULATION VALIDATION" print/assert block)
+# but NOT general_sim()/experiment submission, since that's guarded behind
+# `if __name__ == "__main__":` in that file. This keeps U5_AGEBIN, site_name,
+# and the expected-habitat-combination count locked to whatever the burnin
+# script actually used, instead of a second hardcoded copy that could
+# silently drift out of sync if burnin_UpperWest.py changes later.
+import burnin_UpperWest as burnin
 
-def set_param_fn(config):
-    """
-    This function is a callback that is passed to emod-api.config to set config parameters, including the malaria defaults.
-    """
-    import emodpy_malaria.malaria_config as conf
-    config = conf.set_team_defaults(config, manifest)
-    config.parameters.Climate_Model = "CLIMATE_BY_DATA"
-    
-    # Defaults to 0 (off) in the installed Eradication build's schema - turn on so
-    # InsetChart.json gets written to each simulation's output folder.
-    config.parameters.Enable_Default_Reporting = 1
-    
-    ## existing content
-    # config.parameters.Air_Temperature_Filename = os.path.join('/shared/home/grace/FE-2026-examples/climate/emod_weather_northern',
-    #   'air_temperature.bin')
-    config.parameters.Air_Temperature_Filename = os.path.join('climate', 'air_temperature.bin')
-    config.parameters.Land_Temperature_Filename = os.path.join('climate', 'land_temperature.bin')
-    config.parameters.Rainfall_Filename = os.path.join('climate', 'rainfall.bin')
-    config.parameters.Relative_Humidity_Filename = os.path.join('climate', 'relative_humidity.bin')
+user = getpass.getuser()
 
-    conf.add_species(config, manifest, ["gambiae", "arabiensis", "funestus"])
+# -----------------------------------------------------------------------------------
+# TODO: update to your actual burnin experiment output directory name (the same
+# expt_name used in analyzer_Project_Burnin.py). This is the analyzer's own
+# output-folder label, not burnin.py's Experiment.name, so it isn't derived
+# from the import above.
+# -----------------------------------------------------------------------------------
+expt_name = 'UpperWest_Region_burnin50'
 
-    config.parameters.Simulation_Duration = sim_years*365
-    config.parameters.Run_Number = 0
-    return config
+jdir = manifest.job_directory
+output_dir = os.path.join(jdir, 'UWR_burnin50_outputs')
 
-def set_param(simulation, param, value):
-    """
-    Set specific parameter value
-    Args:
-        simulation: idmtools Simulation
-        param: parameter
-        value: new value
-    Returns:
-        dict
-    """
-    return simulation.task.set_parameter(param, value)
+input_dir = os.path.join(manifest.input_dir)
 
-def build_camp():
-    """
-    This function builds a campaign input file for the DTK using emod_api.
-    """
+# -----------------------------------------------------------------------------------
+# All 5 swept parameters from burnin_UpperWest.py. Run_Number is a stochastic seed,
+# not a calibration target -- score() averages log-likelihood across it, leaving one
+# score per unique (x_Temporary_Larval_Habitat, scale_constant, scale_temp_rain,
+# scale_water_veg) combination.
+# -----------------------------------------------------------------------------------
+sweep_variables = [
+    'x_Temporary_Larval_Habitat',
+    'scale_constant',
+    'scale_temp_rain',
+    'scale_water_veg',
+    'Run_Number'
+]
+seed_variable = 'Run_Number'
+habitat_variables = [v for v in sweep_variables if v != seed_variable]
 
-    camp.set_schema(manifest.schema_file)
-    
-    return camp
+# Expected number of unique (non-seed) habitat combinations, straight from
+# burnin_UpperWest.py's own parameter space -- 5 xTLH x 20 habitat combos = 100.
+expected_habitat_combos = len(burnin.xTLH_range) * burnin.n_habs
 
+# -----------------------------------------------------------------------------------
+# Load simulated PfPR/incidence data -- produced by MonthlyPfPRAnalyzer in
+# analyzer_Project_Burnin.py, NOT the toy example's U5-only file.
+# -----------------------------------------------------------------------------------
+pfpr_file = os.path.join(output_dir, expt_name, 'PfPR_ClinicalIncidence_monthly_burnin.csv')
+sim_pfpr_df = pd.read_csv(pfpr_file)
 
-def build_demog():
-    """
-    This function builds a demographics input file for the DTK using emod_api.
-    """
+# The analyzer's file covers ALL age bins in one file (an 'agebin' column), not a
+# pre-filtered U5-only file. Filter down to the under-5 bin, taken directly from
+# burnin_UpperWest.py's report_age_bins = [0.25, 5, 15, 25, 100] -- index 1 (value
+# 5) is the 0.25-5 year bin.
+U5_AGEBIN = burnin.report_age_bins[1]
 
-    demog = Demographics.from_template_node(lat=10.06, lon=-2.50, pop=1000, name="Wa")
-    demog.SetEquilibriumVitalDynamics() 
-    age_distribution = Distributions.AgeDistribution_SSAfrica
-    demog.SetAgeDistribution(age_distribution)
-    return demog
+available_agebins = sorted(sim_pfpr_df['agebin'].unique())
+print(f"Available age bins in {pfpr_file}: {available_agebins}")
+print(f"Using U5_AGEBIN = {U5_AGEBIN} (burnin_UpperWest.py report_age_bins[1])")
 
+sim_pfpr_df = sim_pfpr_df[sim_pfpr_df['agebin'] == U5_AGEBIN].copy()
 
-def general_sim(selected_platform):
-    """
-    This function is designed to be a parameterized version of the sequence of things we do 
-    every time we run an emod experiment. 
-    """
-
-    # Set platform and associated values, such as the maximum number of jobs to run at one time.
-    # All cluster-specific settings live in manifest.py so users only edit that file.
-    platform = Platform(selected_platform, job_directory=manifest.job_directory,
-                            partition=manifest.partition, time=manifest.sim_time,
-                            modules=[manifest.singularity_module],
-                            max_running_jobs=manifest.max_running_jobs)
-    
-    
-    # Create simulation sweep with builder
-    builder = SimulationBuilder()
-    
-    #x_Temporary_Larval_Habitat =1
-
-    builder.add_sweep_definition(partial(set_param, param='Run_Number'), range(num_seeds))
-    builder.add_sweep_definition(partial(set_param, param='x_Temporary_Larval_Habitat'), np.logspace(-0.5,1,10))
-
-   ## reports are still located here
-
-   # create experiment from builder
-    #experiment = Experiment.from_builder(builder, task, name="example_sim_sweep")
-    
-    # create EMODTask
-    print("Creating EMODTask (from files)...")
-
-
-    task = EMODTask.from_default2(
-        config_path="config.json",
-        eradication_path=manifest.eradication_path,
-        campaign_builder=build_camp,
-        schema_path=manifest.schema_file,
-        param_custom_cb=set_param_fn,
-        ep4_custom_cb=None,
-        demog_builder=build_demog,
-        plugin_report=None
+if sim_pfpr_df.empty:
+    raise ValueError(
+        f"No rows matched agebin == {U5_AGEBIN}. "
+        f"burnin_UpperWest.py's report_age_bins is {burnin.report_age_bins} -- "
+        f"if that's changed since this experiment ran, adjust U5_AGEBIN's index above, "
+        f"or pick from the available bins printed above."
     )
-# set the singularity image to be used when running this experiment
-    task.set_sif(manifest.SIF_PATH, platform)
-    #task.common_assets.add_directory(os.path.join('/shared/home/grace/FE-2026-examples'), relative_path="climate")
-    
-    task.common_assets.add_directory(os.path.join(manifest.input_dir, "emod_weather_upper_west"), relative_path="climate")
-    ## existing contents to be edditted
 
-    
-    add_event_recorder(task, event_list=["HappyBirthday", "Births"],
-                       start_day=1, end_day=sim_years*365, 
-                       node_ids=[1], min_age_years=0,
-                       max_age_years=100)
-    
-    for year in range(sim_years):
-            start_day = 0 + 365 * year
-            sim_year = sim_start_year + year
-            add_malaria_summary_report(task, manifest, start_day=start_day,
-                                        end_day=365+year*365, reporting_interval=30,
-                                        age_bins=[0.25, 5, 115],
-                                        max_number_reports=13,
-                                        pretty_format=True, 
-                                        filename_suffix=f'Monthly_U5_{sim_year}')
+# 'month' from the analyzer is a running index over the full report period (e.g.
+# 1..600 across 50 years), NOT calendar month. Convert to calendar month (1-12) and
+# use 'Year' (capitalized by the analyzer) for the merge below.
+sim_pfpr_df['year'] = sim_pfpr_df['Year'].astype(int)
+sim_pfpr_df['month'] = ((sim_pfpr_df['month'] - 1) % 12) + 1
 
-    
-    
+sim_pfpr_df['npos'] = (sim_pfpr_df['PfPR'] * sim_pfpr_df['Pop']).round(0)
+
+# -----------------------------------------------------------------------------------
+# TODO: point this at your actual DHS calibration data, not the toy fake_DHS_calib.csv.
+# Expected columns: year, month, DHS_n, DHS_pos.
+# -----------------------------------------------------------------------------------
+dhs_pfpr_df = pd.read_csv(os.path.join(input_dir, 'fake_DHS_calib.csv'))
 
 
-    """task.common_assets.add_directory(
-    os.path.join(
-        os.path.dirname(manifest.input_dir),
-        "climate",
-        "emod_weather_upper_west"
-    ),
-    relative_path="climate"
-)
-"""
+def score(sim_df, data_df, sweep_variables, seed_variable='Run_Number'):
+    """
+    Score every unique combination of sweep_variables (habitat params x seeds)
+    against observed DHS PfPR via beta-binomial log-likelihood, then average
+    across seed_variable so each row of the returned score_df is one
+    calibration-parameter combination (not one seed).
+    """
 
-   
-    # create experiment from builder
-    user = os.getlogin()
-    experiment = Experiment.from_builder(builder, task, name=f'{user}_FE_example_calibration')
+    habitat_vars = [v for v in sweep_variables if v != seed_variable]
+
+    uniq_df = sim_df.groupby(sweep_variables).size().reset_index(name='Freq')
+
+    ll = []
+    for _, row in uniq_df.iterrows():
+        mask = pd.Series(True, index=sim_df.index)
+        for var in sweep_variables:
+            mask &= (sim_df[var] == row[var])
+        sim_subset_df = sim_df[mask]
+
+        comb_df = data_df.merge(sim_subset_df, on=['year', 'month'], how='left')
+        ll.append(beta_binomial(comb_df.DHS_n, comb_df.Pop, comb_df.DHS_pos, comb_df.npos))
+
+    uniq_df['ll'] = ll
+
+    score_df = uniq_df.groupby(habitat_vars)['ll'].mean().reset_index(name='ll')
+    return score_df
 
 
-    # The last step is to call run() on the ExperimentManager to run the simulations.
-    experiment.run(wait_until_done=False, platform=platform)
+def plot_output(sim_df, data_df, score_df, habitat_variables):
+    """
+    Left panel: observed vs. simulated PfPR trajectory for every habitat
+    combination (best fit highlighted, rest faint).
+    Right panel: mean log-likelihood ranked across all habitat combinations
+    (a single x-axis line plot doesn't work once there's more than one
+    calibration dimension, so this is a ranked bar chart instead).
+    """
 
+    sim_df = sim_df.copy()
+    data_df = data_df.copy()
 
-    '''# Check result
-    if not experiment.succeeded:
-        print(f"Experiment {experiment.uid} failed.\n")
-        exit()
+    sim_df['date'] = pd.to_datetime([f'{int(y)}-{int(m)}-01' for y, m in zip(sim_df.year, sim_df.month)])
+    data_df['date'] = pd.to_datetime([f'{int(y)}-{int(m)}-01' for y, m in zip(data_df.year, data_df.month)])
+    data_df['PfPR'] = data_df['DHS_pos'] / data_df['DHS_n']
 
-    print(f"Experiment {experiment.uid} succeeded.")'''
+    sns.set_style('whitegrid', {'axes.linewidth': 0.5})
+    fig = plt.figure(figsize=(14, 5))
+    axes = [fig.add_subplot(1, 2, x + 1) for x in range(2)]
 
+    best_row = score_df.loc[score_df['ll'].idxmax()]
+    best_ll = best_row['ll']
+    best_label = ', '.join(f'{v}={best_row[v]:.3g}' for v in habitat_variables)
+
+    for _, combo in score_df.iterrows():
+        mask = pd.Series(True, index=sim_df.index)
+        for var in habitat_variables:
+            mask &= (sim_df[var] == combo[var])
+        plot_df = sim_df[mask].groupby('date', as_index=False)['PfPR'].mean()
+
+        is_best = all(combo[v] == best_row[v] for v in habitat_variables)
+        alpha = 1.0 if is_best else 0.10
+        label = f'best fit ({best_label})' if is_best else None
+
+        axes[0].plot(plot_df['date'], plot_df['PfPR'], color='#FF0000', alpha=alpha, label=label)
+
+    axes[0].scatter(data_df['date'], data_df['PfPR'], s=data_df['DHS_n'], color='k', label='Observed')
+    axes[0].set_ylabel('PfPR')
+    axes[0].set_title('Observed vs Simulated (dark red = best fit)')
+    axes[0].legend(loc='best', fontsize=7)
+
+    ranked = score_df.sort_values('ll', ascending=False).reset_index(drop=True)
+    colors = ['red' if i == 0 else '#FF9999' for i in range(len(ranked))]
+
+    axes[1].bar(range(len(ranked)), ranked['ll'], color=colors)
+    axes[1].set_xticks(range(len(ranked)))
+    axes[1].set_xticklabels(
+        [', '.join(f'{ranked.loc[i, v]:.3g}' for v in habitat_variables) for i in range(len(ranked))],
+        rotation=90, fontsize=6
+    )
+    axes[1].set_ylabel('mean log-likelihood')
+    axes[1].set_title(
+        f'Ranked habitat combinations ({", ".join(habitat_variables)})\n'
+        f'Best: {best_label}, ll={best_ll:.3g}'
+    )
+
+    fig.tight_layout()
+    fig.savefig(os.path.join(output_dir, expt_name, 'selection.png'))
+    print(f"Wrote {os.path.join(output_dir, expt_name, 'selection.png')}")
 
 
 if __name__ == "__main__":
-    import emod_malaria.bootstrap as dtk
-    import pathlib
 
-    dtk.setup(pathlib.Path(manifest.eradication_path).parent)
-    os.chmod(manifest.eradication_path, 0o755)
+    scores = score(sim_pfpr_df, dhs_pfpr_df, sweep_variables, seed_variable=seed_variable)
 
-    selected_platform = "SLURM_LOCAL"
-    general_sim(selected_platform)
+    # Sanity check against burnin_UpperWest.py's own parameter space -- catches
+    # missing/failed simulations before you pick a "best fit" from incomplete data.
+    if len(scores) != expected_habitat_combos:
+        print(
+            f"\nWARNING: expected {expected_habitat_combos} habitat combinations "
+            f"({len(burnin.xTLH_range)} xTLH values x {burnin.n_habs} habitat combos, "
+            f"from burnin_UpperWest.py), but found {len(scores)} in the analyzed data. "
+            f"Some simulations may be missing or failed to complete."
+        )
+
+    print("\nScored habitat combinations (best first):")
+    print(scores.sort_values('ll', ascending=False).to_string(index=False))
+
+    sim_pfpr_agg = (
+        sim_pfpr_df
+        .groupby(['year', 'month'] + habitat_variables)['PfPR']
+        .mean()
+        .reset_index(name='PfPR')
+    )
+
+    plot_output(sim_pfpr_agg, dhs_pfpr_df, scores, habitat_variables)
+    print(f"\nDone -- {burnin.site_name}, {expt_name}")

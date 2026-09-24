@@ -1,0 +1,6 @@
+survey_year,region,age_min_months,age_max_months,prevalence,source,test_method
+2011,Upper West,6,59,0.512,MICS_2011,Microscopy
+2014,Upper West,6,59,0.378,GDHS_2014,Microscopy
+2016,Upper West,6,59,0.215,GMIS_2016,Microscopy
+2019,Upper West,6,59,0.105,GMIS_2019,Microscopy
+2022,Upper West,6,59,0.134,GDHS_2022,Microscopy

@@ -2,7 +2,7 @@ import os
 #
 # This is a user-modifiable Python file designed to be a set of simple input file and directory settings that you can choose and change.
 
-# the location of the file containing AssetCollection id for the dtk sif (singularity image)
+# The location of the file containing the AssetCollection id for the dtk sif (Singularity image)
 sif_id = 'dtk_sif.id'
 
 # The script is going to use this to store the downloaded schema file. Create 'download' directory or change to your preferred (existing) location.
@@ -25,7 +25,7 @@ ep4_path="python_scripts"
 #requirements = "./requirements.txt"
 # This is where your simulations and outputs will be stored
 user = os.getlogin()
-job_directory = os.path.join(os.path.expanduser('~'), 'FE-2026-examples/experiments')
+job_directory = os.path.join(os.path.expanduser('~'), 'Final-Project-UWR/experiments')
 os.makedirs(job_directory, exist_ok=True)
 # This is the path to the sif image used to run EMOD
 # dtk_run_rocky_py39.sif ships Python 3.9 on an old Rocky base whose glibc is too old for the
@@ -49,8 +49,8 @@ partition = 'demo'
 singularity_module = '/shared/emod/shared_tools/modulefiles/singularity'
 
 # Wall-clock time limit requested per job (HH:MM:SS).
-sim_time = '2:00:00'
+sim_time = '10:00:00'
 
 # Maximum number of simulations SLURM will run at once for one experiment.
-max_running_jobs = 10
+max_running_jobs = 100
 #max_running_jobs = 5
