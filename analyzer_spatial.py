@@ -114,7 +114,7 @@ class SpatialAnalyzer(IAnalyzer):
         self.spatial_channels = spatial_channels
         self.output_fname = os.path.join(self.working_dir, f"{self.f_base}_{self.f_suffix}.csv")
         self.snapshot = snapshot
-        
+
 
         # make sure output folder exists
         #os.makedirs(os.path.join(self.working_dir, 'spatial_output', self.dir_name), exist_ok=True)
@@ -157,22 +157,22 @@ class SpatialAnalyzer(IAnalyzer):
             print("Full spatial report saved to", self.output_fname)
             # save snapshots
             if self.snapshot is not None:
-                d_sub = d[d['time'] == self.snapshot[0]] 
+                d_sub = d[d['time'] == self.snapshot[0]]
                 sub_fname = os.path.join(self.working_dir, 'spatial_output',self.dir_name,f"{self.f_base}_{self.f_suffix}_Snapshot.csv")
                 if(len(self.snapshot)>1):
                     for snap in self.snapshot[1:]:
                         d_sub_add = d[d['time'] == snap]
                         d_sub = pd.concat([d_sub,d_sub_add])
                 d_sub.to_csv(sub_fname)
-                print("Snapshot from days",self.snapshot, "saved to",sub_fname) 
-                
-        
+                print("Snapshot from days",self.snapshot, "saved to",sub_fname)
+
+
 if __name__ == "__main__":
 
     from idmtools.analysis.analyze_manager import AnalyzeManager
     from idmtools.core import ItemType
     from idmtools.core.platform_factory import Platform
-    
+
     ## Experiments Dictionary ##
     ############################
     # {'experiment label' : 'exp_id'}
@@ -187,16 +187,16 @@ if __name__ == "__main__":
     ## Analyzer Specifications ##
     #############################
     # Grouping variables (for each node & timestep)
-    sweep_variables = ['Run_Number', 'x_Temporary_Larval_Habitat']   
+    sweep_variables = ['Run_Number', 'x_Temporary_Larval_Habitat']
     # Outputs to analyze - must have been requested during simulation
-    spatial_channels = ['Population',           
+    spatial_channels = ['Population',
                         'PCR_Parasite_Prevalence',
                         'New_Clinical_Cases']
     # SpatialReportMalariaFiltered or SpatialReport?
-    report_type = 'SpatialReportMalariaFiltered'    
-    # .bin File suffix? (use empty string '' if none) 
+    report_type = 'SpatialReportMalariaFiltered'
+    # .bin File suffix? (use empty string '' if none)
     report_suffix = 'all_ages'
-    
+
     ## Run Analyzer ##
     ##################
     with Platform('SLURM_LOCAL',job_directory=jdir) as platform:
@@ -207,7 +207,7 @@ if __name__ == "__main__":
                                         exp_id = exp_id,
                                         spatial_channels=spatial_channels,
                                         sweep_variables=sweep_variables,
-                                        working_dir=wdir)]      
+                                        working_dir=wdir)]
             # Create AnalyzerManager with required parameters
             manager = AnalyzeManager(configuration={},ids=[(exp_id, ItemType.EXPERIMENT)],
                                      analyzers=analyzer, partial_analyze_ok=True)

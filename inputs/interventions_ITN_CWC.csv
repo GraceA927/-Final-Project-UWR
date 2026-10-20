@@ -1,0 +1,11 @@
+node_id,phase,year,start_day,kill_effect,kill_decay,block_effect,block_decay,discard_k,discard_l,coverage,channel,target_group
+1,pickup,2016,1096,0.6,1460,0.9,730,3,1095,0.074638233,CWC,children_at_MR2
+1,pickup,2017,1461,0.6,1460,0.9,730,3,1095,0.403737659,CWC,children_at_MR2
+1,pickup,2018,1826,0.6,1460,0.9,730,3,1095,0.358864542,CWC,children_at_MR2
+1,pickup,2019,2191,0.6,1460,0.9,730,3,1095,0.481255161,CWC,children_at_MR2
+1,pickup,2020,2556,0.6,1460,0.9,730,3,1095,0.466679672,CWC,children_at_MR2
+1,pickup,2021,2921,0.6,1460,0.9,730,3,1095,0.551082251,CWC,children_at_MR2
+1,pickup,2022,3286,0.6,1460,0.9,730,3,1095,0.555340978,CWC,children_at_MR2
+1,pickup,2023,3651,0.6,1460,0.9,730,3,1095,0.565174382,CWC,children_at_MR2
+1,pickup,2024,4016,0.6,1460,0.9,730,3,1095,0.588016241,CWC,children_at_MR2
+1,pickup,2025,4381,0.6,1460,0.9,730,3,1095,0.586935484,CWC,children_at_MR2

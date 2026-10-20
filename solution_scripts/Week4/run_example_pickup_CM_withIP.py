@@ -1,10 +1,10 @@
 import pathlib
 import os
 from functools import \
-    partial 
- 
-#idmtools   
-from idmtools.assets import Asset, AssetCollection  
+    partial
+
+#idmtools
+from idmtools.assets import Asset, AssetCollection
 from idmtools.builders import SimulationBuilder
 from idmtools.core.platform_factory import Platform
 from idmtools.entities.experiment import Experiment
@@ -46,8 +46,8 @@ def set_param_fn(config):
     conf.add_species(config, manifest, ["gambiae", "arabiensis", "funestus"])
 
     config.parameters.Simulation_Duration = pickup_years*365
-    
-    
+
+
     #Add climate files
     # Enable climate-by-data so the *_Filename params below are active (required by
     # the installed emod-api, which errors if you set a param its climate mode ignores).
@@ -56,14 +56,14 @@ def set_param_fn(config):
     config.parameters.Land_Temperature_Filename = os.path.join('climate','example_air_temperature_daily.bin')
     config.parameters.Rainfall_Filename = os.path.join('climate','example_rainfall_daily.bin')
     config.parameters.Relative_Humidity_Filename = os.path.join('climate', 'example_relative_humidity_daily.bin')
-    
+
     #Add serialization - add pickup "read" parameters to config.json
     config.parameters.Serialized_Population_Reading_Type = "READ"
     config.parameters.Serialization_Mask_Node_Read = 0
     config.parameters.Serialization_Time_Steps = [serialize_years*365]
 
     return config
-    
+
 def set_param(simulation, param, value):
     """
     Set specific parameter value
@@ -82,7 +82,7 @@ def build_camp(cm_cov_U5=0.75,cm_start=1):
     """
 
     camp.set_schema(manifest.schema_file)
-    
+
     # Calculating the coverage for low and high access groups
     # We assume high access group = 0.5 of total population (see demographics setup)
     frac_high = 0.5
@@ -92,7 +92,7 @@ def build_camp(cm_cov_U5=0.75,cm_start=1):
     else:
         cm_cov_U5_low = 0
         cm_cov_U5_high = cm_cov_U5 / frac_high
-    
+
     # Add case management for the low access group by age groups and severity
     # This example assumes adults will seek treatment 75% as often as U5s and severe cases will seek treatment 15% more than U5s (up to 100% coverage)
     cm.add_treatment_seeking(camp, start_day=cm_start, drug=['Artemether', 'Lumefantrine'],
@@ -101,7 +101,7 @@ def build_camp(cm_cov_U5=0.75,cm_start=1):
                                  {'trigger': 'NewClinicalCase', 'coverage': cm_cov_U5_low*0.75, 'agemin': 5, 'agemax': 115,
                                  'seek': 1,'rate': 0.3},
                                  {'trigger': 'NewSevereCase', 'coverage': min(cm_cov_U5_low*1.15,1), 'agemin': 0, 'agemax': 115,
-                                 'seek': 1,'rate': 0.5}],          
+                                 'seek': 1,'rate': 0.5}],
                        ind_property_restrictions=[{'Access': 'Low'}],
                        broadcast_event_name="Received_Treatment")
     cm.add_treatment_seeking(camp, start_day=cm_start, drug=['Artemether', 'Lumefantrine'],
@@ -110,7 +110,7 @@ def build_camp(cm_cov_U5=0.75,cm_start=1):
                                  {'trigger': 'NewClinicalCase', 'coverage': cm_cov_U5_high*0.75, 'agemin': 5, 'agemax': 115,
                                  'seek': 1,'rate': 0.3},
                                  {'trigger': 'NewSevereCase', 'coverage': min(cm_cov_U5_high*1.15,1), 'agemin': 0, 'agemax': 115,
-                                 'seek': 1,'rate': 0.5}],          
+                                 'seek': 1,'rate': 0.5}],
                        ind_property_restrictions=[{'Access': 'High'}],
                        broadcast_event_name="Received_Treatment")
     return camp
@@ -125,7 +125,7 @@ def update_serialize_parameters(simulation, df, x: int):
 
     path = df["serialized_file_path"][x]
     seed = int(df["Run_Number"][x])
-    
+
     simulation.task.set_parameter("Serialized_Population_Filenames", df["Serialized_Population_Filenames"][x])
     simulation.task.set_parameter("Serialized_Population_Path", os.path.join(path, "output"))
     simulation.task.set_parameter("Run_Number", seed) #match pickup simulation run number to burnin simulation
@@ -141,31 +141,31 @@ def build_demog():
 
     demog = Demographics.from_template_node(lat=1, lon=2, pop=1000, name="Example_Site")
     demog.SetEquilibriumVitalDynamics()
-    
+
     age_distribution = Distributions.AgeDistribution_SSAfrica
     demog.SetAgeDistribution(age_distribution)
-    
+
     initial_distribution = [0.5, 0.5]
     demog.AddIndividualPropertyAndHINT(Property="Access", Values=["Low", "High"],
-                                       InitialDistribution=initial_distribution)                                  
-    
-                                            
+                                       InitialDistribution=initial_distribution)
+
+
     return demog
 
 def general_sim(selected_platform):
     """
-    This function is designed to be a parameterized version of the sequence of things we do 
-    every time we run an emod experiment. 
+    This function is designed to be a parameterized version of the sequence of things we do
+    every time we run an emod experiment.
     """
 
     # Set platform and associated values, such as the maximum number of jobs to run at one time
     platform = Platform(selected_platform, job_directory=manifest.job_directory, partition=manifest.partition, time='2:00:00',
                             modules=[manifest.singularity_module], max_running_jobs=10)
 
-    # create EMODTask 
+    # create EMODTask
     print("Creating EMODTask (from files)...")
 
-    
+
     task = EMODTask.from_default2(
         config_path="config.json",
         eradication_path=manifest.eradication_path,
@@ -176,24 +176,24 @@ def general_sim(selected_platform):
         demog_builder=build_demog,
         plugin_report=None
     )
-    
-    
+
+
     # set the singularity image to be used when running this experiment
     task.set_sif(manifest.SIF_PATH, platform)
-    
+
     # add weather directory as an asset
     task.common_assets.add_directory(os.path.join(manifest.input_dir, "example_weather", "out"),
-                                         relative_path="climate")    
+                                         relative_path="climate")
 
     # Create simulation sweep with builder
     builder = SimulationBuilder()
-    
+
     # Create burnin df, retrieved from burnin ID (defined above)
     burnin_df = build_burnin_df(burnin_exp_id, platform,serialize_years*365)
 
     builder.add_sweep_definition(partial(update_serialize_parameters, df=burnin_df), range(len(burnin_df.index)))
-      
-    # Add intervention sweeps   
+
+    # Add intervention sweeps
     builder.add_multiple_parameter_sweep_definition(
         update_campaign_multiple_parameters,
         dict(
@@ -201,14 +201,14 @@ def general_sim(selected_platform):
             cm_start=[1, 100, 365]
         )
     )
-    
+
     # Add reports
     # report received treatment events
     add_event_recorder(task, event_list=["Received_Treatment"],
                        start_day=1, end_day=pickup_years*365, node_ids=[1], min_age_years=0,
                        max_age_years=100,
                        ips_to_record=['Access'])
-                       
+
     # MalariaSummaryReport
     sim_start_year = 2010
     for i in range(pickup_years):

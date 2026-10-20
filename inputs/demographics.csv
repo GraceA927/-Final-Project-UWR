@@ -1,2 +1,2 @@
-node_id,pop,lat,lon,ignore_b_rate
-1,1000,10.43,-2.21,31
+node_id,pop,lat,lon
+1,1000,10.43,-2.21

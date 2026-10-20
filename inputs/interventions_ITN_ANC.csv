@@ -1,0 +1,11 @@
+node_id,phase,year,start_day,kill_effect,kill_decay,block_effect,block_decay,discard_k,discard_l,coverage,channel,target_group
+1,pickup,2016,1096,0.6,1460,0.9,730,3,1095,0.004245283018867924,ANC,pregnant_women
+1,pickup,2017,1461,0.6,1460,0.9,730,3,1095,0.61798128342246,ANC,pregnant_women
+1,pickup,2018,1826,0.6,1460,0.9,730,3,1095,0.593607305936073,ANC,pregnant_women
+1,pickup,2019,2191,0.6,1460,0.9,730,3,1095,0.6900702106318957,ANC,pregnant_women
+1,pickup,2020,2556,0.6,1460,0.9,730,3,1095,0.7012727272727273,ANC,pregnant_women
+1,pickup,2021,2921,0.6,1460,0.9,730,3,1095,0.519938612645795,ANC,pregnant_women
+1,pickup,2022,3286,0.6,1460,0.9,730,3,1095,0.520411622276029,ANC,pregnant_women
+1,pickup,2023,3651,0.6,1460,0.9,730,3,1095,0.4337030618139804,ANC,pregnant_women
+1,pickup,2024,4016,0.6,1460,0.9,730,3,1095,0.4786147951665193,ANC,pregnant_women
+1,pickup,2025,4381,0.6,1460,0.9,730,3,1095,0.499370307580529,ANC,pregnant_women

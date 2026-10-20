@@ -250,16 +250,16 @@ if __name__ == "__main__":
     # Replace with the actual experiment UUID printed when
     # burnin_UpperWest.py's experiment.run(...) call finishes.
     expts = {
-        'UpperWest_Region_burnin50': '22ab82f2-212d-452c-b6f5-bdc2eb17fc6c'
+        'UpperWest_Region_burnin50': 'c522a73f-90c8-4407-a776-1993bd2083a3'
     }
 
     jdir = manifest.job_directory
-    wdir = os.path.join(jdir, 'UWR_burnin50_outputs')
+    wdir = os.path.join(jdir, 'outputs')
     os.makedirs(wdir, exist_ok=True)
 
     # Must match sim_start_year in burnin_UpperWest.py (1965), or every
     # 'date'/'Year' column downstream will be wrong.
-    sim_start_year = 1965
+    sim_start_year = 1963
     serialize_years = 50
     step = 'burnin'
 

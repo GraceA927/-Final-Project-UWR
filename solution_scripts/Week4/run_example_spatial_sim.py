@@ -8,11 +8,11 @@ import os
 import numpy as np
 import pandas as pd
 from functools import \
-    partial 
+    partial
 import sys
- 
-# from idmtools   
-from idmtools.assets import Asset, AssetCollection  
+
+# from idmtools
+from idmtools.assets import Asset, AssetCollection
 from idmtools.builders import SimulationBuilder
 from idmtools.core.platform_factory import Platform
 from idmtools.entities.experiment import Experiment
@@ -49,16 +49,16 @@ tag = 'spatial_sim'                     # label for experiment
 phase = 'pickup'                                     # burnin or pickup?
 burnin_id = 'e71c708c-8a95-43e0-8753-cec161585669'   # experiment id containing serialized population (required for pickup)
 
-burnin_years = 30        
-pickup_years = 10      
+burnin_years = 30
+pickup_years = 10
 if(phase=="burnin"):
     num_seeds = 1         # number stochastic realizations
     # Vary Habitat Scale Factors
     num_xTLH_samples = 10
     min_xTLH = 0
     max_xTLH = 1
-     
-if(phase=="pickup"): 
+
+if(phase=="pickup"):
     num_seeds = 10        # number stochastic realizations
     # Vary Case Management
 
@@ -102,7 +102,7 @@ def set_param_fn(config):
       config.parameters.Enable_Migration_Heterogeneity = 0
 
     return config
-    
+
 ###########################
 # Sweep Config Parameters #
 ###########################
@@ -128,13 +128,13 @@ def build_camp(cm_cov_u5=0.8):
     This function builds a campaign input file for the DTK using emod_api.
     """
     camp.set_schema(manifest.schema_file)
-    
-    ### Calibration 
+
+    ### Calibration
     ###############################
-    
+
     # Note: no interventions during burnin
-    
-    if(phase =="pickup"):                        
+
+    if(phase =="pickup"):
       ### Case Management ###
       # Treatment-Seeking Rates by age #
       cm_coverage_by_age = [{'trigger': 'NewClinicalCase',      ## For uncomplicated symptomatic cases < 5
@@ -161,32 +161,32 @@ def build_camp(cm_cov_u5=0.8):
                                         'agemax': 115,
                                         'seek': 1,
                                         'rate': 0.5}]
-      # Treatment in some nodes #                                 
-      cm.add_treatment_seeking(camp, 
-                               start_day = 1, 
+      # Treatment in some nodes #
+      cm.add_treatment_seeking(camp,
+                               start_day = 1,
                                drug=['Artemether','Lumefantrine'],
                                targets=cm_coverage_by_age,
                                node_ids = [1,2],
                                broadcast_event_name="Received_Treatment")
       ### ITN Distributions in some nodes ###
-      itn.add_itn_scheduled(camp, 
-                            start_day = 165, 
-                            demographic_coverage = 0.9, 
-                            repetitions = 4, 
-                            timesteps_between_repetitions = 365*3, 
+      itn.add_itn_scheduled(camp,
+                            start_day = 165,
+                            demographic_coverage = 0.9,
+                            repetitions = 4,
+                            timesteps_between_repetitions = 365*3,
                             node_ids = [1,3],
                             receiving_itn_broadcast_event= "Received_ITN")
     return camp
-    
+
 #################
 # Serialization #
 #################
 def update_serialize_parameters(simulation, df, x: int):
     # Serialized file path:
-    path = df["serialized_file_path"][x]    
+    path = df["serialized_file_path"][x]
     # Other parameters from burnin that need to be carried over:
     xTLH = df["x_Temporary_Larval_Habitat"][x]
-    
+
     simulation.task.set_parameter("Serialized_Population_Filenames", df["Serialized_Population_Filenames"][x])  # Set serialized population filename
     simulation.task.set_parameter("Serialized_Population_Path", os.path.join(path, "output"))                   # Set serialized population path
     simulation.task.set_parameter("x_Temporary_Larval_Habitat", xTLH)                                           # Grab xTLH from burnin simulation
@@ -206,12 +206,12 @@ def build_demog():
     demog.SetEquilibriumVitalDynamics()
     age_distribution = Distributions.AgeDistribution_SSAfrica
     demog.SetAgeDistribution(age_distribution)
-    
+
     # Incomment to include Migration (OPTIONAL)
-    # Using this gravity parameters set from Monique's MMC work 
+    # Using this gravity parameters set from Monique's MMC work
     #migration_partial = partial(migration.from_demog_and_param_gravity, gravity_params=[7.50395776e-06, 9.65648371e-01, 9.65648371e-01, -1.10305489e+00], id_ref='FE_example', migration_type=migration.Migration.REGIONAL)
-    # Uncomment end of return statement below too when turning on migration! 
-    return demog#, migration_partial    
+    # Uncomment end of return statement below too when turning on migration!
+    return demog#, migration_partial
 
 #####################
 # Build Simulations #
@@ -219,8 +219,8 @@ def build_demog():
 
 def general_sim(selected_platform):
     """
-    This function is designed to be a parameterized version of the sequence of things we do 
-    every time we run an emod experiment. 
+    This function is designed to be a parameterized version of the sequence of things we do
+    every time we run an emod experiment.
     """
     # Platform #
     ############
@@ -247,7 +247,7 @@ def general_sim(selected_platform):
     # add weather directory as an asset #
     task.common_assets.add_directory(os.path.join(manifest.input_dir, "climate"), relative_path="climate")
     # Builder #
-    ########### 
+    ###########
     # add builder #
     builder = SimulationBuilder()
     if(phase=="burnin"):
@@ -259,7 +259,7 @@ def general_sim(selected_platform):
     if(phase=="pickup"):
       ### Connect to burnin ###
       ## Read in serialized data
-      burnin_df = build_burnin_df(burnin_id, platform, burnin_years*365) 
+      burnin_df = build_burnin_df(burnin_id, platform, burnin_years*365)
       ## Pick up parameters
       # x_Temporary_Larval_Habitat
       builder.add_sweep_definition(partial(update_serialize_parameters, df=burnin_df), range(len(burnin_df.index)))
@@ -283,13 +283,13 @@ def general_sim(selected_platform):
                                    max_age_years = 100,
                                    event_trigger_list = ["Received_ITN", "Received_Treatment"],
                                    filename_suffix = "_".join(("node",str(node))))
-           
+
       # filtered spatial malaria report
-      add_spatial_report_malaria_filtered(task, manifest, 
-                                          start_day = start_report, end_day = end_report, 
-                                          reporting_interval = 1, 
-                                          node_ids =None, 
-                                          min_age_years = 0.25, max_age_years = 100, 
+      add_spatial_report_malaria_filtered(task, manifest,
+                                          start_day = start_report, end_day = end_report,
+                                          reporting_interval = 1,
+                                          node_ids =None,
+                                          min_age_years = 0.25, max_age_years = 100,
                                           spatial_output_channels = ["Population",
                                                                      "PCR_Parasite_Prevalence",
                                                                      "New_Clinical_Cases"] ,

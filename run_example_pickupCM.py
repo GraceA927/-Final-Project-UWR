@@ -109,9 +109,9 @@ CM_FILE = "intervention_CMBN.csv"
 ITN_FILE = "interventions_ITN.csv"
 ITN_AGE_FILE = "interventions_ITN_age.csv"
 ITN_SEASON_FILE = "interventions_ITN_season.csv"
-IRS_FILE = "interventions_IRS.csv"
-SMC_FILE = "interventions_SMC.csv"
-VACCINE_FILE = "interventions_malariaVaccine.csv"
+IRS_FILE = "intervention_IRS.csv"
+SMC_FILE = "intervention_SMC.csv"
+VACCINE_FILE = "intervention_malariaVaccine.csv"
 
 
 ################################################################################
@@ -125,10 +125,9 @@ BURNIN_END_YEAR = 2012
 BURNIN_DAYS = (BURNIN_END_YEAR - BURNIN_START_YEAR + 1) * DAYS_PER_YEAR   # 18,250
 
 PICKUP_START_YEAR = 2013
-PICKUP_END_YEAR = 2015
-PICKUP_YEARS = PICKUP_END_YEAR - PICKUP_START_YEAR + 1                    # 3
-PICKUP_DAYS = PICKUP_YEARS * DAYS_PER_YEAR                                 # 1,095
-
+PICKUP_END_YEAR = 2025
+PICKUP_YEARS = PICKUP_END_YEAR - PICKUP_START_YEAR + 1                    # 13
+PICKUP_DAYS = PICKUP_YEARS * DAYS_PER_YEAR                                 # 4,745
 MONTH_OFFSET = np.cumsum([0, 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30])  # flat 365-day year
 MONTH_NAMES = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"]
 
@@ -167,7 +166,7 @@ def fmt_day(pickup_day):
 
 # Set this directly to the completed 50-year burn-in experiment ID before
 # running pickup, e.g. BURNIN_EXPERIMENT_ID = ' '
-BURNIN_EXPERIMENT_ID = '8c9e94bd-5053-443c-8d4f-5798a6f3cbe7'
+BURNIN_EXPERIMENT_ID = 'f8e680c0-2d53-4e1c-9ea1-70b77b67298a'
 
 BURNIN_FILTER = {}
 
@@ -191,6 +190,11 @@ BURNIN_FILTER = {}
 PICKUP_XTLH_RANGE = list(np.logspace(1.85, 2.15, 5))
 PICKUP_HABITAT_MIXES = [(1.0, 10.0, 0.5)]
 
+# Write the end-of-pickup (day 4,745 = 31 Dec 2025) state.
+# Scenario runs can therefore start from 1 Jan 2026.
+# Mask 0 on write saves everything, including this pickup's larval habitats.
+WRITE_PICKUP_STATE = True
+
 
 ################################################################################
 # INTERVENTION DEFAULTS (used when a column is absent from the CSV)
@@ -209,6 +213,90 @@ ITN_DEFAULTS = dict(blocking_initial=0.9, blocking_decay=730,
 IRS_DEFAULTS = dict(killing_initial=0.7, killing_box=0, killing_decay=180,
                     repelling_initial=0.0, repelling_box=0, repelling_decay=90,
                     repetitions=1, timesteps_between_repetitions=365)
+
+# --------------------------------------------------------------------------
+# IRS PRODUCTS
+# --------------------------------------------------------------------------
+# Resistance is NOT modelled genetically, so the insecticide name does
+# nothing in EMOD by itself. Each product is represented by its own
+# effect and waning (exponential decay; effect halves after ~0.69 x decay).
+#
+# These are STARTING VALUES from typical residual-efficacy ranges, not
+# calibrated estimates -- replace them with values from your literature
+# review or local bioassays.
+#
+# How the `insecticide` column is read:
+#   "A; B"  -> different products in different districts that year. The
+#              row's coverage is split equally between them (warning shown);
+#              better: give each product its own row with its own coverage.
+#   "A + B" -> one combined application. Uses the entry below if the
+#              combination is listed (e.g. Fludora Fusion); otherwise the
+#              components are combined: killing = 1 - (1-k1)(1-k2), and the
+#              longer box/decay of the two.
+# Explicit killing_*/repelling_* values in the CSV row override this table;
+# leave those cells blank to use the product values.
+# --------------------------------------------------------------------------
+IRS_PRODUCTS = {
+    # Actellic 300CS (organophosphate), ~4-6+ months residual
+    "pirimiphos methyl": dict(killing_initial=1.0, killing_box=0, killing_decay=180,
+                              repelling_initial=0.0, repelling_box=0, repelling_decay=90),
+    # Carbamate, short residual ~2-3 months
+    "propoxur": dict(killing_initial=1.0, killing_box=0, killing_decay=60,
+                     repelling_initial=0.0, repelling_box=0, repelling_decay=60),
+    # SumiShield 50WG (neonicotinoid), slow-acting, long residual ~6-8+ months
+    "clothianidin": dict(killing_initial=1.0, killing_box=0, killing_decay=240,
+                         repelling_initial=0.0, repelling_box=0, repelling_decay=90),
+    # Fludora Fusion (co-formulated); pyrethroid part largely lost to resistance
+    "clothianidin + deltamethrin": dict(killing_initial=1.0, killing_box=0, killing_decay=240,
+                                        repelling_initial=0.0, repelling_box=0, repelling_decay=90),
+    # VECTRON T500 (meta-diamide), ~6-12 months residual
+    "broflanilide": dict(killing_initial=1.0, killing_box=0, killing_decay=270,
+                         repelling_initial=0.0, repelling_box=0, repelling_decay=90),
+}
+
+IRS_PARAM_COLUMNS = {   # internal name -> CSV column
+    "killing_initial": "killing_initial_effect",
+    "killing_box": "killing_box_duration",
+    "killing_decay": "killing_decay_time_constant",
+    "repelling_initial": "repelling_initial_effect",
+    "repelling_box": "repelling_box_duration",
+    "repelling_decay": "repelling_decay_time_constant",
+}
+
+
+def normalise_product(name):
+    """'Pirimiphos-methyl' -> 'pirimiphos methyl'; combos sorted: 'a + b'."""
+    parts = [" ".join(p.replace("-", " ").replace("_", " ").lower().split())
+             for p in str(name).split("+")]
+    return " + ".join(sorted(p for p in parts if p))
+
+
+def product_params(name):
+    """Effect parameters for one product or '+' combination."""
+    key = normalise_product(name)
+    if key in IRS_PRODUCTS:
+        return IRS_PRODUCTS[key], "table"
+    parts = key.split(" + ")
+    missing = [p for p in parts if p not in IRS_PRODUCTS]
+    if missing:
+        raise ValueError(
+            f"{IRS_FILE}: insecticide '{name}' has no entry for {missing} in IRS_PRODUCTS. "
+            "Add it with its killing/repelling values."
+        )
+    if len(parts) == 1:
+        return IRS_PRODUCTS[parts[0]], "table"
+    comps = [IRS_PRODUCTS[p] for p in parts]
+    combined = dict(
+        killing_initial=1 - np.prod([1 - c["killing_initial"] for c in comps]),
+        killing_box=max(c["killing_box"] for c in comps),
+        killing_decay=max(c["killing_decay"] for c in comps),
+        repelling_initial=1 - np.prod([1 - c["repelling_initial"] for c in comps]),
+        repelling_box=max(c["repelling_box"] for c in comps),
+        repelling_decay=max(c["repelling_decay"] for c in comps),
+    )
+    return combined, "combined from components"
+
+
 SMC_DEFAULTS = dict(age_min=0.25, age_max=5.0, drug_code="SPA")
 SMC_DRUG_ALIASES = {"SPAQ": "SPA", "SP+AQ": "SPA", "SP-AQ": "SPA"}
 VACCINE_DEFAULTS = dict(age_min=0.42, age_max=2.0, initial_effect=0.8,
@@ -380,15 +468,52 @@ def load_irs():
         return df, dropped
     d = IRS_DEFAULTS
     df["cov"] = pick(df, ["coverage"], label=IRS_FILE).astype(float)
-    df["killing_initial"] = pick(df, ["killing_initial_effect"], d["killing_initial"]).astype(float)
-    df["killing_box"] = pick(df, ["killing_box_duration"], d["killing_box"]).astype(float)
-    df["killing_decay"] = pick(df, ["killing_decay_time_constant"], d["killing_decay"]).astype(float)
-    df["repelling_initial"] = pick(df, ["repelling_initial_effect"], d["repelling_initial"]).astype(float)
-    df["repelling_box"] = pick(df, ["repelling_box_duration"], d["repelling_box"]).astype(float)
-    df["repelling_decay"] = pick(df, ["repelling_decay_time_constant"], d["repelling_decay"]).astype(float)
     df["reps"] = pick(df, ["repetitions"], d["repetitions"]).astype(int)
     df["rep_gap"] = pick(df, ["timesteps_between_repetitions"], d["timesteps_between_repetitions"]).astype(int)
+
+    if "insecticide" not in df.columns:
+        df["insecticide"] = ""
+
+    # "A; B" in one row -> one row per product, coverage split equally
+    rows = []
+    for _, r in df.iterrows():
+        products = [p.strip() for p in str(r["insecticide"]).split(";") if p.strip()]
+        if len(products) > 1:
+            print(f"  WARNING {IRS_FILE}: {int(r['year'])} lists {len(products)} products in one row; "
+                  f"splitting coverage {r['cov']:.3f} equally. Give each product its own row "
+                  "with its own coverage if you know the split.")
+        for prod in products or [""]:
+            r2 = r.copy()
+            r2["insecticide"] = prod
+            r2["cov"] = r["cov"] / max(len(products), 1)
+            rows.append(r2)
+    df = pd.DataFrame(rows).reset_index(drop=True)
+
+    # Effect parameters: explicit CSV value > product table > IRS_DEFAULTS
+    sources = []
+    for i, r in df.iterrows():
+        if r["insecticide"]:
+            params, source = product_params(r["insecticide"])
+        else:
+            params, source = d, "IRS_DEFAULTS (no insecticide given)"
+        overridden = []
+        for internal, col in IRS_PARAM_COLUMNS.items():
+            if col in df.columns and pd.notna(r[col]):
+                df.at[i, internal] = float(r[col])
+                if not np.isclose(float(r[col]), params[internal]):
+                    overridden.append(col)
+            else:
+                df.at[i, internal] = float(params[internal])
+        sources.append(source + (f"; CSV overrides {overridden}" if overridden else ""))
+    df["param_source"] = sources
+    df["iv_name"] = ["IRS_" + (normalise_product(p).replace(" + ", "_plus_").replace(" ", "_") or "default")
+                     for p in df["insecticide"]]
+
     check_fraction(df["cov"], IRS_FILE)
+    year_total = df.groupby("year")["cov"].sum()
+    if (year_total > 1).any():
+        raise ValueError(f"{IRS_FILE}: product coverages add up to more than 1 in year(s) "
+                         f"{list(year_total[year_total > 1].index)}.")
     return df, dropped
 
 
@@ -461,7 +586,8 @@ def describe_schedules(sched):
                              f"kill {r.killing_initial:.3f}/{r.killing_decay:g}d  "
                              f"age curve: {'yes' if age else 'none'}")
                 elif key == "irs":
-                    extra = f"  kill {r.killing_initial:g}/{r.killing_decay:g}d"
+                    extra = (f"  {r.insecticide or '(none)'}: kill {r.killing_initial:.2f}, "
+                             f"decay {r.killing_decay:g}d  [{r.param_source}]")
                 elif key == "smc":
                     extra = f"  round {r.round}  ages {r.amin:g}-{r.amax:g}  {r.drug_code}"
                 else:
@@ -603,6 +729,14 @@ def set_param_fn(config):
     config.parameters.Serialized_Population_Reading_Type = "READ"
     config.parameters.Serialization_Mask_Node_Read = 16
 
+    # Save the end-of-2025 state so calibration follow-ups and scenario runs
+    # can start from 1 Jan 2026 (writes output/state-01095.dtk per simulation)
+    if WRITE_PICKUP_STATE:
+        config.parameters.Serialized_Population_Writing_Type = "TIMESTEP"
+        config.parameters.Serialization_Time_Steps = [PICKUP_DAYS]
+        config.parameters.Serialization_Mask_Node_Write = 0
+        config.parameters.Serialization_Precision = "REDUCED"
+
     config.parameters.Birth_Rate_Dependence = "FIXED_BIRTH_RATE"
     return config
 
@@ -699,12 +833,16 @@ def add_itns(campaign, df, age_curves, seasonal_dependence):
 
 
 def add_irs(campaign, df):
-    # The insecticide name is not passed: that needs insecticide resistance
-    # set up in the config, which this model does not use.
+    # The insecticide name is not passed to EMOD: that needs insecticide
+    # resistance set up in the config, which this model does not use. Each
+    # product gets its own Intervention_Name so products sprayed in the same
+    # round do not overwrite each other, while a re-spray with the same
+    # product the next year replaces the old, decayed one.
     from emodpy_malaria.interventions.irs import add_scheduled_irs_housing_modification
     for r in df.itertuples():
         call_supported(
             add_scheduled_irs_housing_modification, campaign, "IRS",
+            intervention_name=r.iv_name,
             start_day=int(r.pickup_day),
             demographic_coverage=float(r.cov),
             repetitions=int(r.reps),
@@ -914,13 +1052,11 @@ def general_sim(selected_platform, burnin_id, climate_dir):
                                  PICKUP_XTLH_RANGE)
     builder.add_sweep_definition(update_pickup_habitat, range(len(PICKUP_HABITAT_MIXES)))
 
-    '''user = getpass.getuser()
+    user = getpass.getuser()
     name = f"{user}_{SITE_NAME}_Pickup_{PICKUP_START_YEAR}_{PICKUP_END_YEAR}_{n_sims}sim"
-    print(f"\nCreating experiment: {name}")'''
-    
-    experiment_name = "UWR_AIM1_Pickup_1963_2012_CM"
+    print(f"\nCreating experiment: {name}")
 
-    experiment = Experiment.from_builder(builder, task, name=experiment_name)
+    experiment = Experiment.from_builder(builder, task, name=name)
     experiment.run(wait_until_done=False, platform=platform)
 
     print("\nExperiment submitted successfully.")

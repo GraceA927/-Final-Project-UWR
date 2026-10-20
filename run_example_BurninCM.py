@@ -81,7 +81,7 @@ import emod_api.demographics.PreDefinedDistributions as Distributions
 from emod_api.demographics.DemographicsTemplates import CrudeRate
 from emodpy_malaria.interventions.scale_larval_habitats import add_scale_larval_habitats
 from emodpy_malaria.interventions.treatment_seeking import add_treatment_seeking
-from emodpy_malaria.reporters.builtin import add_malaria_summary_report
+#from emodpy_malaria.reporters.builtin import add_malaria_summary_report |#No reports for burnin
 import emod_api.campaign as camp
 
 from idmtools.builders import SimulationBuilder
@@ -136,10 +136,16 @@ EXPECTED_ORIGINAL_YEARS = f"{BURNIN_START_YEAR}-{BURNIN_END_YEAR}"
 # CALIBRATION PARAMETER SPACE
 ################################################################################
 
-SCALE_CONSTANT = [1.0]
-SCALE_TEMP_RAIN = [5.0, 10.0, 25.0, 50.0]
+SCALE_CONSTANT = [1.0] # Amount of Constant relative to Base of 5e5. Typically left as [1.0]
+SCALE_TEMP_RAIN = [5.0, 10.0, 25.0, 50.0,100.0]# Amount of Temporary_Rainfall relative to Constant
 SCALE_WATER_VEG = [0.0, 0.1, 0.5, 1.0, 2.5]
-XTLH_RANGE = list(np.logspace(1.85, 2.15, 5))
+#scale_water_veg = [0.0,0.1,0.5,1.0,2.5]# Amount of Water_Vegetation relative to Constant
+XTLH_RANGE = list(np.logspace(1.3010, 1.8451, 10))
+
+#XTLH_RANGE = list(np.logspace(1.85, 2.15, 10))
+#xTLH_range = list(np.logspace(1.85,2.15,20))
+
+
 
 habitat_df = pd.DataFrame(
     list(product(SCALE_CONSTANT, SCALE_TEMP_RAIN, SCALE_WATER_VEG)),
@@ -150,12 +156,12 @@ EXPECTED_SIMULATIONS = len(XTLH_RANGE) * N_HABS * NUM_SEEDS
 
 
 ################################################################################
-# REPORTING SETTINGS
+# REPORTING SETTINGS THIS COMMENT TO PRESERVE SPACE
 ################################################################################
 
-REPORT_INTERVAL_DAYS = 30
-REPORT_AGE_BINS = [0.25, 5, 15, 25, 100]
-REPORT_MAX_NUMBER_REPORTS = 13
+#REPORT_INTERVAL_DAYS = 30
+#REPORT_AGE_BINS = [0.25, 5, 15, 25, 100]
+#REPORT_MAX_NUMBER_REPORTS = 13
 
 
 ################################################################################
@@ -443,7 +449,7 @@ def set_param_fn(config):
     config.parameters.Rainfall_Filename = os.path.join("climate", "rainfall.bin")
     config.parameters.Relative_Humidity_Filename = os.path.join("climate", "relative_humidity.bin")
 
-    config.parameters.Enable_Default_Reporting = 1
+    config.parameters.Enable_Default_Reporting = 0 # do not report insertchart
 
     config.parameters["logLevel_JsonConfigurable"] = "ERROR"
     config.parameters["logLevel_VectorHabitat"] = "ERROR"
@@ -487,7 +493,9 @@ def set_param_fn(config):
         )
 
     config.parameters.Run_Number = 0
-
+    # ------------------------------------------------------------------
+    # SERIALIZATION ONLY
+    # ------------------------------------------------------------------
     # Serialize at the end of the burn-in
     config.parameters.Serialized_Population_Writing_Type = "TIMESTEP"
     config.parameters.Serialization_Time_Steps = [BURNIN_DAYS]
@@ -653,7 +661,7 @@ def update_campaign_multiple_parameters(simulation, habitat_index, scale_start_d
 # MALARIA SUMMARY REPORTS
 ################################################################################
 
-def add_burnin_summary_reports(task):
+'''def add_burnin_summary_reports(task):
     """One 30-day malaria summary report per burn-in year (1963-2012)."""
     for year_index in range(BURNIN_YEARS):
         calendar_year = BURNIN_START_YEAR + year_index
@@ -670,7 +678,7 @@ def add_burnin_summary_reports(task):
             max_number_reports=REPORT_MAX_NUMBER_REPORTS,
             pretty_format=True,
             filename_suffix=f"Monthly_U5_{calendar_year}",
-        )
+        )'''
 
 
 ################################################################################
@@ -720,7 +728,7 @@ def general_sim(selected_platform):
         plugin_report=None,
     )
 
-    add_burnin_summary_reports(task)
+    #add_burnin_summary_reports(task)
 
     task.set_sif(manifest.SIF_PATH, platform)
 
@@ -733,8 +741,8 @@ def general_sim(selected_platform):
     experiment_name = (
         f"{user}_{SITE_NAME}_Burnin_{BURNIN_START_YEAR}_{BURNIN_END_YEAR}_CM_{EXPECTED_SIMULATIONS}sim"
     )'''
-    
-    experiment_name = "UWR_AIM1_Burnin_1963_2012_CM"
+
+    experiment_name = "UWR_50yrs_With_ECM_pop"
 
     print(f"\nCreating experiment: {experiment_name}")
 

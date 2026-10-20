@@ -1,10 +1,10 @@
 import pathlib
 import os
 from functools import \
-    partial 
- 
-#idmtools   
-from idmtools.assets import Asset, AssetCollection  
+    partial
+
+#idmtools
+from idmtools.assets import Asset, AssetCollection
 from idmtools.builders import SimulationBuilder
 from idmtools.core.platform_factory import Platform
 from idmtools.entities.experiment import Experiment
@@ -39,7 +39,7 @@ def build_camp():
 
     camp.set_schema(manifest.schema_file)
 
-    
+
     return camp
 
 
@@ -50,24 +50,24 @@ def build_demog():
 
     demog = Demographics.from_template_node(lat=1, lon=2, pop=10, name="Example_Site")
 
-    
+
     return demog
 
 
 def general_sim(selected_platform):
     """
-    This function is designed to be a parameterized version of the sequence of things we do 
-    every time we run an emod experiment. 
+    This function is designed to be a parameterized version of the sequence of things we do
+    every time we run an emod experiment.
     """
 
     # Set platform and associated values, such as the maximum number of jobs to run at one time
     platform = Platform(selected_platform, job_directory=manifest.job_directory, partition=manifest.partition, time='2:00:00',
                             modules=[manifest.singularity_module], max_running_jobs=10)
 
-    # create EMODTask 
+    # create EMODTask
     print("Creating EMODTask (from files)...")
 
-    
+
     task = EMODTask.from_default2(
         config_path="config.json",
         eradication_path=manifest.eradication_path,
@@ -78,11 +78,11 @@ def general_sim(selected_platform):
         demog_builder=build_demog,
         plugin_report=None
     )
-    
-    
+
+
     # set the singularity image to be used when running this experiment
     task.set_sif(manifest.SIF_PATH, platform)
-    
+
 
     # create experiment from task
     experiment = Experiment.from_task(task, name="example_sim_inputs")

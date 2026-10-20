@@ -5,7 +5,7 @@ import numpy as np
 import sys
 import re
 import random
-from idmtools.entities import IAnalyzer	
+from idmtools.entities import IAnalyzer
 from idmtools.entities.simulation import Simulation
 
 ## For plotting
@@ -68,7 +68,7 @@ class MonthlyPfPRAnalyzer(IAnalyzer):
         super(MonthlyPfPRAnalyzer, self).__init__(working_dir=working_dir,
                                                    filenames=["output/MalariaSummaryReport_monthly.json"]
                                                    )
-     
+
         self.sweep_variables = sweep_variables or ["Run_Number"]
         self.expt_name = expt_name
         self.start_year = start_year
@@ -86,16 +86,16 @@ class MonthlyPfPRAnalyzer(IAnalyzer):
         adf = pd.DataFrame()
         fname = self.filenames[0]
         age_bins = data[self.filenames[0]]['Metadata']['Age Bins']
-      
+
         for age in range(len(age_bins)):
             d = data[fname]['DataByTimeAndAgeBins']['PfPR by Age Bin'][:-1]
             pfpr = [x[age] for x in d]
-          
+
             d = data[fname]['DataByTimeAndAgeBins']['Annual Clinical Incidence by Age Bin'][:-1]
             clinical_cases = [x[age] for x in d]
-         
+
             d = data[fname]['DataByTimeAndAgeBins']['Annual Severe Incidence by Age Bin'][:-1]
-            severe_cases = [x[age] for x in d]          
+            severe_cases = [x[age] for x in d]
 
             d = data[fname]['DataByTimeAndAgeBins']['Average Population by Age Bin'][:-1]
             pop = [x[age] for x in d]
@@ -105,7 +105,7 @@ class MonthlyPfPRAnalyzer(IAnalyzer):
                                     'Cases': clinical_cases,
                                     'Severe_cases': severe_cases,
                                     'Pop': pop})
-                       
+
             simdata['agebin'] = age_bins[age]
 
 
@@ -117,10 +117,10 @@ class MonthlyPfPRAnalyzer(IAnalyzer):
                     adf[sweep_var] = simulation.tags[sweep_var]
                 except:
                     adf[sweep_var] = '-'.join([str(x) for x in simulation.tags[sweep_var]])
-        
+
         adf['Year'] = None
         adf['Year'] = np.floor((adf['month']-1)/12)+self.start_year
-        
+
         return adf
 
     def reduce(self, all_data):
@@ -139,29 +139,29 @@ class MonthlyPfPRAnalyzer(IAnalyzer):
         adf = pd.concat(selected).reset_index(drop=True)
         adf.to_csv((os.path.join(self.working_dir, self.expt_name, 'PfPR_ClinicalIncidence_monthly.csv')),
                    index=False)
-        
+
 if __name__ == "__main__":
 
     from idmtools.analysis.analyze_manager import AnalyzeManager
     from idmtools.core import ItemType
     from idmtools.core.platform_factory import Platform
 
-    
+
     expts = { #'expt_name':'exp_id'
     }
-    
+
     jdir = manifest.job_directory
     wdir=os.path.join(jdir, 'my_outputs')
-    
+
     serialize_years = 10  # Same as in example_run_burnin.py
     step = 'burnin'
-    
+
     ## Set sweep_variables and event_list as required depending on experiment
     channels_inset_chart = ['Statistical Population', 'New Clinical Cases', 'Adult Vectors', 'Infected']
     sweep_variables = ['Run_Number']
     if step == 'pickup':
         sweep_variables = ['Run_Number'] # for times when you add additional items to the pickup, you can add more sweep variables here
-    
+
     with Platform('SLURM_LOCAL',job_directory=jdir) as platform:
 
         for expt_name, exp_id in expts.items():
@@ -192,10 +192,10 @@ if __name__ == "__main__":
                 am = AnalyzeManager(configuration={}, ids=[(exp_id, ItemType.EXPERIMENT)],
                                      analyzers=analyzers_pickup, partial_analyze_ok=True)
                 am.analyze()
-            
+
             else:
-                print('Please define step, options are burnin or pickup') 
-                
+                print('Please define step, options are burnin or pickup')
+
     expt_name=list(expts.keys())[0]
     df = pd.read_csv(os.path.join(wdir, expt_name, 'All_Age_InsetChart.csv'))
     df['date'] = pd.to_datetime(df['date'])

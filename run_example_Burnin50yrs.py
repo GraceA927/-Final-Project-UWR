@@ -420,63 +420,66 @@ def build_camp(habitat=-1, scale_start_day=1):
 
     return camp
 
-
 #########################################################################################
 # DEMOGRAPHICS
 #########################################################################################
 
 def _read_site_definition():
     """
-    Read the Upper West Region site definition.
-    """
+    Read the Upper West Region single-node demographic definition.
 
+    Expected demographics.csv format:
+        node_id,pop,lat,lon,ignore_b_rate
+        1,1000,10.43,-2.21,31
+    """
     demo_file = os.path.join(manifest.input_dir, "demographics.csv")
+    if not os.path.isfile(demo_file):
+        raise FileNotFoundError(f"Demographics file not found: {demo_file}")
+
     site_df = pd.read_csv(demo_file)
     site_df.columns = [c.strip() for c in site_df.columns]
 
-    row = site_df.iloc[0]
+    required_columns = ["node_id", "pop", "lat", "lon", "ignore_b_rate"]
+    missing_columns = [col for col in required_columns if col not in site_df.columns]
+    if missing_columns:
+        raise ValueError(f"demographics.csv is missing required columns: {missing_columns}")
 
+    # This calibration model requires exactly one node
+    if len(site_df) != 1:
+        raise ValueError(
+            f"demographics.csv contains {len(site_df)} rows. "
+            "The Upper West Region calibration requires exactly one node."
+        )
+
+    row = site_df.iloc[0]
     return {
-        "name": str(row["name"]).strip(),
+        "node_id": int(row["node_id"]),
+        "pop": float(row["pop"]),
         "lat": float(row["lat"]),
         "lon": float(row["lon"]),
-        "nodes": int(row["nodes"])
+        "ignore_b_rate": int(row["ignore_b_rate"]),
     }
 
 
 def build_demog():
-    """
-    Build the single-node Upper West Region demographic structure.
-    """
-
+    """Build the single-node Upper West Region demographic structure."""
     site = _read_site_definition()
 
-    # Single-node requirement
-    if site["nodes"] != 1:
+    if site["node_id"] != 1:
         raise ValueError(
-            f"demographics.csv specifies {site['nodes']} nodes. "
-            f"This calibration model requires exactly one node."
+            f"Expected Upper West Region node_id=1, "
+            f"but demographics.csv contains node_id={site['node_id']}."
         )
 
-    # Create node
+    population = site["pop"]
+
     demog = Demographics.from_template_node(
-        lat=site["lat"],
-        lon=site["lon"],
-        pop=population_size,
-        name=site["name"]
+        lat=site["lat"], lon=site["lon"], pop=population, name=site_name
     )
 
-    # Vital dynamics.
-    #
-    # FIXED: birth_rate is a crude rate (per 1,000 population per year) and
-    # CrudeRate() already performs the /1000/365 conversion to EMOD's required
-    # daily per-individual rate internally. The birth-rate call previously
-    # passed `birth_rate * 1000`, which after CrudeRate()'s own division
-    # produced a rate 1000x too large (0.0849315, vs. EMOD's 0.005 ceiling) --
-    # this was the direct cause of every simulation in the 500-run sweep
-    # failing with ConfigurationRangeException. Passing birth_rate directly,
-    # consistent with the mortality-rate and age-distribution calls below,
-    # gives the correct ~0.0000849/day rate.
+    # birth_rate = crude birth rate per 1,000 population per year.
+    # CrudeRate() converts this to EMOD's daily per-individual rate --
+    # do NOT multiply birth_rate by 1000 here.
     demog.SetBirthRate(CrudeRate(birth_rate))
     demog.SetMortalityRate(CrudeRate(birth_rate))
     demog.SetEquilibriumAgeDistFromBirthAndMortRates(CrudeRate(birth_rate), CrudeRate(birth_rate))
@@ -492,12 +495,9 @@ def build_demog():
 #########################################################################################
 
 def get_site_node_ids():
-    """
-    Return node IDs for the Upper West Region model.
-    """
-
+    """Return node IDs for the Upper West Region model."""
     site = _read_site_definition()
-    return list(range(1, site["nodes"] + 1))
+    return [site["node_id"]]
 
 
 #########################################################################################
@@ -640,9 +640,12 @@ def general_sim(selected_platform):
     # FIXED: os.getlogin() can raise OSError ("Inappropriate ioctl for device")
     # when there's no controlling terminal -- a known failure mode for jobs
     # submitted via SLURM batch. getpass.getuser() is the robust equivalent.
-    user = getpass.getuser()
+    '''user = getpass.getuser()
 
     experiment_name = f"{user}_{site_name}_Project_burnin{serialize_years}"
+
+    print(f"\nCreating experiment: {experiment_name}")'''
+    experiment_name = f"UWR_AIM1_Burnin_{serialize_years}_without_ECM"
 
     print(f"\nCreating experiment: {experiment_name}")
 

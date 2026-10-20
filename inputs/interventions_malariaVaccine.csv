@@ -1,9 +1,0 @@
-node_id,phase,dose,year,coverage
-1,pickup,D1,2024,0.308282
-1,pickup,D2,2024,0.194764
-1,pickup,D3,2024,0.056045
-1,pickup,D4,2024,0.004189
-1,pickup,D1,2025,0.708209
-1,pickup,D2,2025,0.692182
-1,pickup,D3,2025,0.659191
-1,pickup,D4,2025,0.233845

@@ -1,10 +1,10 @@
 import pathlib
 import os
 from functools import \
-    partial 
- 
-#idmtools   
-from idmtools.assets import Asset, AssetCollection  
+    partial
+
+#idmtools
+from idmtools.assets import Asset, AssetCollection
 from idmtools.builders import SimulationBuilder
 from idmtools.core.platform_factory import Platform
 from idmtools.entities.experiment import Experiment
@@ -32,11 +32,11 @@ def set_param_fn(config):
     import emodpy_malaria.malaria_config as conf
     config = conf.set_team_defaults(config, manifest)
     config.parameters.Climate_Model = "CLIMATE_BY_DATA"
-    
+
     # Defaults to 0 (off) in the installed Eradication build's schema - turn on so
     # InsetChart.json gets written to each simulation's output folder.
     config.parameters.Enable_Default_Reporting = 1
-    
+
     ## existing content
     # config.parameters.Air_Temperature_Filename = os.path.join('/shared/home/grace/FE-2026-examples/climate/emod_weather_northern',
     #   'air_temperature.bin')
@@ -58,7 +58,7 @@ def build_camp():
     """
 
     camp.set_schema(manifest.schema_file)
-    
+
     return camp
 
 
@@ -68,7 +68,7 @@ def build_demog():
     """
 
     demog = Demographics.from_template_node(lat=10.06, lon=-2.50, pop=1000, name="Wa")
-    demog.SetEquilibriumVitalDynamics() 
+    demog.SetEquilibriumVitalDynamics()
     age_distribution = Distributions.AgeDistribution_SSAfrica
     demog.SetAgeDistribution(age_distribution)
     return demog
@@ -76,8 +76,8 @@ def build_demog():
 
 def general_sim(selected_platform):
     """
-    This function is designed to be a parameterized version of the sequence of things we do 
-    every time we run an emod experiment. 
+    This function is designed to be a parameterized version of the sequence of things we do
+    every time we run an emod experiment.
     """
 
     # Set platform and associated values, such as the maximum number of jobs to run at one time.
@@ -87,10 +87,10 @@ def general_sim(selected_platform):
                             modules=[manifest.singularity_module],
                             max_running_jobs=manifest.max_running_jobs)
 
-    # create EMODTask 
+    # create EMODTask
     print("Creating EMODTask (from files)...")
 
-    
+
     task = EMODTask.from_default2(
         config_path="config.json",
         eradication_path=manifest.eradication_path,
@@ -101,12 +101,12 @@ def general_sim(selected_platform):
         demog_builder=build_demog,
         plugin_report=None
     )
-    
-    
+
+
     # set the singularity image to be used when running this experiment
     task.set_sif(manifest.SIF_PATH, platform)
     #task.common_assets.add_directory(os.path.join('/shared/home/grace/FE-2026-examples'), relative_path="climate")
-    
+
     task.common_assets.add_directory(os.path.join(manifest.input_dir, "emod_weather_upper_west"), relative_path="climate")
     """task.common_assets.add_directory(
     os.path.join(

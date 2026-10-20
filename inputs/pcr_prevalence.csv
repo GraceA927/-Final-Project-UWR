@@ -1,6 +1,6 @@
-survey_year,region,age_min_months,age_max_months,prevalence,source,test_method
-2011,Upper West,6,59,0.512,MICS_2011,Microscopy
-2014,Upper West,6,59,0.378,GDHS_2014,Microscopy
-2016,Upper West,6,59,0.215,GMIS_2016,Microscopy
-2019,Upper West,6,59,0.105,GMIS_2019,Microscopy
-2022,Upper West,6,59,0.134,GDHS_2022,Microscopy
+survey_year,region,age_min_months,age_max_months,prevalence,source,test_method,DHS_n,DHS_pos,fieldwork_start,fieldwork_end
+2011,Upper West,6,59,0.512,MICS_2011,Microscopy,135,69,2011-09-15,2011-12-14
+2014,Upper West,6,59,0.378,GDHS_2014,Microscopy,66,25,2014-09-05,2014-12-15
+2016,Upper West,6,59,0.215,GMIS_2016,Microscopy,75,16,2016-10-03,2016-12-01
+2019,Upper West,6,59,0.105,GMIS_2019,Microscopy,83,9,2019-09-25,2019-11-24
+2022,Upper West,6,59,0.134,GDHS_2022,Microscopy,122,16,2022-10-17,2023-01-14

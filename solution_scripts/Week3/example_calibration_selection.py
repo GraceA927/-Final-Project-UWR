@@ -64,7 +64,7 @@ def plot_output(sim_df, data_df, score_df, variable):
     axes[0].set_ylabel('PfPR')
     axes[0].set_title('Observed vs Simulated (Dark red is the best fit)')
 
-    
+
     axes[1].plot(score_df[variable], score_df['ll'], '-o', color='#FF0000', markersize=5)
     axes[1].scatter(score_df1[variable], score_df1.ll, s=90, color='red')
     axes[1].set_ylabel('log-likelihood')

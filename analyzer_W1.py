@@ -5,7 +5,7 @@ import numpy as np
 import sys
 import re
 import random
-from idmtools.entities import IAnalyzer	
+from idmtools.entities import IAnalyzer
 from idmtools.entities.simulation import Simulation
 import manifest
 
@@ -59,39 +59,38 @@ class SimpleInsetChartAnalyzer(IAnalyzer):
         adf = pd.concat(selected).reset_index(drop=True)
         adf.to_csv(os.path.join(self.working_dir, self.expt_name, 'All_Age_InsetChart.csv'), index=False)
 
-        
+
 if __name__ == "__main__":
 
     from idmtools.analysis.analyze_manager import AnalyzeManager
     from idmtools.core import ItemType
     from idmtools.core.platform_factory import Platform
 
-    
+
     # Map an output subfolder name -> the experiment ID to analyze. Replace the ID
     # with your own experiment's ID (printed when your run script finishes).
     expts = {
         'example_basic' : '<your-experiment-id>'
     }
-    
+
 
     jdir = manifest.job_directory
     wdir = os.path.join(jdir, 'my_outputs')
-    
+
     if not os.path.exists(wdir):
         os.mkdir(wdir)
-    
-    
+
+
     with Platform('SLURM_LOCAL',job_directory=jdir) as platform:
 
         for expt_name, exp_id in expts.items():
-          
+
             analyzer = [SimpleInsetChartAnalyzer(expt_name=expt_name,
                                       start_year = 2023,
                                       working_dir=wdir)]
-            
+
             # Create AnalyzerManager with required parameters
             manager = AnalyzeManager(configuration={}, ids=[(exp_id, ItemType.EXPERIMENT)],
                                      analyzers=analyzer, partial_analyze_ok=True)
             # Run analyze
             manager.analyze()
-            

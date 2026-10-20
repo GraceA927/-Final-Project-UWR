@@ -5,7 +5,7 @@ import numpy as np
 import sys
 import re
 import random
-from idmtools.entities import IAnalyzer	
+from idmtools.entities import IAnalyzer
 from idmtools.entities.simulation import Simulation
 import manifest
 
@@ -79,31 +79,31 @@ class MonthlyPfPRAnalyzerIP(IAnalyzer):
         if self.burnin is not None:
             adf = adf[adf['year'] > self.start_year + self.burnin]
         adf.to_csv((os.path.join(self.working_dir, self.expt_name, f'{self.ipfilter}_PfPR_ClinicalIncidence.csv')), index=False)
-        
+
 if __name__ == "__main__":
 
     from idmtools.analysis.analyze_manager import AnalyzeManager
     from idmtools.core import ItemType
     from idmtools.core.platform_factory import Platform
 
-    
+
     expts = {
         'week4_IP_CM' : '43220559-e527-41e6-8460-f6ad88da9f73'
     }
-    
+
 
     jdir = manifest.job_directory
     wdir=os.path.join(jdir, 'my_outputs')
-    
+
     if not os.path.exists(wdir):
         os.mkdir(wdir)
-    
+
     sweep_variables = ['Run_Number', 'x_Temporary_Larval_Habitat']
-    
+
     with Platform('SLURM_LOCAL', job_directory=jdir) as platform:
 
         for expt_name, exp_id in expts.items():
-          
+
             analyzer = [MonthlyPfPRAnalyzerIP(expt_name=expt_name,
                                       start_year=2010,
                                       end_year=2015,
@@ -116,10 +116,10 @@ if __name__ == "__main__":
                                       sweep_variables=sweep_variables,
                                       working_dir=wdir,
                                       ipfilter='lowaccess')]
-            
+
             # Create AnalyzerManager with required parameters
             manager = AnalyzeManager(configuration={}, ids=[(exp_id, ItemType.EXPERIMENT)],
                                      analyzers=analyzer, partial_analyze_ok=True)
             # Run analyze
             manager.analyze()
-            
+

@@ -10,7 +10,7 @@ from idmtools_calibra.utilities.ll_calculators import beta_binomial
 import manifest
 
 user = os.getlogin()  # user initials
-expt_name = 'grace_FE_example_outputs' # directory name for the experiment outputs
+expt_name = '/shared/home/grace/Final-Project-UWR/experiments/outputs' # directory name for the experiment outputs
 
 jdir = manifest.job_directory
 output_dir=os.path.join(jdir, 'my_outputs')

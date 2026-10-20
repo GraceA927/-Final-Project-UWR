@@ -138,10 +138,10 @@
             "ResultUnits": "daily probability of dying",
             "ResultValues": [
                [
-                  0.00010959504641363832
+                  2.9863459607343227e-05
                ],
                [
-                  0.00010959504641363832
+                  2.9863459607343227e-05
                ]
             ]
          },
@@ -155,18 +155,30 @@
          "RiskDistribution2": 1.6,
          "RiskDistributionFlag": 5
       },
-      "IndividualProperties": [],
+      "IndividualProperties": [
+         {
+            "Initial_Distribution": [
+               1.0,
+               0.0
+            ],
+            "Property": "Pregnancy",
+            "Values": [
+               "NotPregnant",
+               "IsPregnant"
+            ]
+         }
+      ],
       "NodeAttributes": {
          "Airport": 1,
          "Altitude": 0,
-         "BirthRate": 0.0001095890410958904,
+         "BirthRate": 0.0005,
          "Region": 1,
          "Seaport": 1
       }
    },
    "Metadata": {
       "Author": "grace",
-      "DateCreated": "09/24/2026",
+      "DateCreated": "10/10/2026",
       "IdReference": "Gridded world grump2.5arcmin",
       "NodeCount": 1,
       "Tool": "emod-api"

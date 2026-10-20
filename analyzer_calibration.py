@@ -100,8 +100,8 @@ if __name__ == "__main__":
         # 'week2_outputs' : '26f947c3-0770-46df-bc6a-c1c77e36f686'
         'grace_FE_example_outputs': '5dfd3e12-57b0-4d43-adfc-db654a0116ca'
     }
-    
-    
+
+
 
     jdir = manifest.job_directory
     wdir = os.path.join(jdir, 'my_outputs')

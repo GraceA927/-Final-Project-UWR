@@ -1,10 +1,10 @@
 import pathlib
 import os
 from functools import \
-    partial 
- 
-#idmtools   
-from idmtools.assets import Asset, AssetCollection  
+    partial
+
+#idmtools
+from idmtools.assets import Asset, AssetCollection
 from idmtools.builders import SimulationBuilder
 from idmtools.core.platform_factory import Platform
 from idmtools.entities.experiment import Experiment
@@ -35,8 +35,8 @@ def set_param_fn(config):
 
     config.parameters.Simulation_Duration = sim_years*365
     config.parameters.Run_Number = 5
-    
-    
+
+
     #Add climate files
     # Enable climate-by-data so the *_Filename params below are active (required by
     # the installed emod-api, which errors if you set a param its climate mode ignores).
@@ -57,7 +57,7 @@ def build_camp():
 
     camp.set_schema(manifest.schema_file)
 
-    
+
     return camp
 
 
@@ -68,27 +68,27 @@ def build_demog():
 
     demog = Demographics.from_template_node(lat=0.4479, lon=33.2026, pop=1000, name="Example_Site")
     demog.SetEquilibriumVitalDynamics()
-    
+
     age_distribution = Distributions.AgeDistribution_SSAfrica
     demog.SetAgeDistribution(age_distribution)
-    
+
     return demog
 
 
 def general_sim(selected_platform):
     """
-    This function is designed to be a parameterized version of the sequence of things we do 
-    every time we run an emod experiment. 
+    This function is designed to be a parameterized version of the sequence of things we do
+    every time we run an emod experiment.
     """
 
     # Set platform and associated values, such as the maximum number of jobs to run at one time
     platform = Platform(selected_platform, job_directory=manifest.job_directory, partition=manifest.partition, time='2:00:00',
                             modules=[manifest.singularity_module], max_running_jobs=10)
 
-    # create EMODTask 
+    # create EMODTask
     print("Creating EMODTask (from files)...")
 
-    
+
     task = EMODTask.from_default2(
         config_path="config.json",
         eradication_path=manifest.eradication_path,
@@ -99,11 +99,11 @@ def general_sim(selected_platform):
         demog_builder=build_demog,
         plugin_report=None
     )
-    
-    
+
+
     # set the singularity image to be used when running this experiment
     task.set_sif(manifest.SIF_PATH, platform)
-    
+
     # add weather directory as an asset
     task.common_assets.add_directory(os.path.join(manifest.input_dir, "example_weather", "out"),
                                          relative_path="climate")
@@ -112,7 +112,7 @@ def general_sim(selected_platform):
     add_event_recorder(task, event_list=["HappyBirthday", "Births"],
                        start_day=1, end_day=sim_years*365, node_ids=[1], min_age_years=0,
                        max_age_years=100)
-                       
+
     # MalariaSummaryReport
     add_malaria_summary_report(task, manifest, start_day=1, end_day=sim_years*365, reporting_interval=30,
                                age_bins=[0.25, 5, 115],
@@ -134,7 +134,7 @@ def general_sim(selected_platform):
         exit()
 
     print(f"Experiment {experiment.uid} succeeded.")
-    
+
 
 
 if __name__ == "__main__":
@@ -146,4 +146,4 @@ if __name__ == "__main__":
 
     selected_platform = "SLURM_LOCAL"
     general_sim(selected_platform)
-    
+
