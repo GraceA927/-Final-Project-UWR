@@ -45,7 +45,7 @@ PROJECT_DIR = "/shared/home/grace/Final-Project-UWR"
 INPUT_DIR = os.path.join(PROJECT_DIR, "inputs")
 
 # Analyzer output folder: <job_directory>/<experiment>_output/
-ANALYZER_DIR = os.path.join(PROJECT_DIR, "experiments", "UWR_Pickup_ECM_output")
+ANALYZER_DIR = os.path.join(PROJECT_DIR, "experiments", "Selected_pickup13yr_AnalyzerOutput")
 PFPR_CSV = os.path.join(ANALYZER_DIR, "PfPR_ClinicalIncidence_monthly_pickup.csv")
 OBSERVED_CASES_PATH = os.path.join(INPUT_DIR, "monthly_u5_cases.csv")
 OUTPUT_DIR = ANALYZER_DIR

@@ -1,2 +1,2 @@
 node_id,phase,year,start_day,end_day,kill_effect,kill_decay,block_effect,block_decay,discard_k,discard_l,coverage
-1,pickup,2016,1338,1344,0.25,1460,0.75,730,3,1095,0.90
+1,pickup,2016,1338,1344,0.25,1460,0.75,730,3,1095,0.0

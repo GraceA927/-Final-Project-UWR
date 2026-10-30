@@ -58,11 +58,22 @@ What is and is not carried in the serialized state:
   - NOT carried: config settings such as Birth_Rate_Dependence and x_Birth.
                  The pickup must set the same values itself.
 
+Vector behaviour
+----------------
+Anthropophily and Indoor_Feeding_Fraction are read per species from
+vector.csv (columns 'anthropophily' and 'indoor_feeding') and written to the
+config when APPLY_VECTOR_BEHAVIOUR is True. When False, the EMOD / team
+defaults are used and those two CSV columns are ignored.
+These are config settings, so they are NOT carried in the serialized state:
+the pickup must use the same flag and the same values.
+
 Burn-in content
 ---------------
 INCLUDED
   - 50-year tiled climatology
   - Larval habitat parameter sweep (xTLH x habitat mix x seeds)
+  - Vector behaviour (Anthropophily, Indoor_Feeding_Fraction per species,
+    from vector.csv; controlled by APPLY_VECTOR_BEHAVIOUR)
   - Pregnancy tracking (Pregnancy individual property)
   - Historical case management (phase == "burnin" rows of intervention_CMBN.csv)
   - Event recorder (day 1 to end of burn-in)
@@ -90,8 +101,8 @@ one year long so it ends exactly where the 2009+ block begins; otherwise two
 campaigns on the same trigger would overlap and stack their coverage.
 
 CM_DAY_SOURCE picks how the start day is set:
-    "year" -> start_day = (year - 1963) * 365 + 1   (e.g. 2004 -> day 14966)
-    "csv"  -> CSV start_day as-is
+    "year" - start_day = (year - 1963) * 365 + 1   (e.g. 2004 - day 14966)
+    "csv"  - CSV start_day as-is
 The default is "year": the CSV start_day column is then ignored, so its odd
 values (1, 1461, 16470, 16791 ...) do not matter. Durations are clipped so
 nothing runs past BURNIN_DAYS. This emodpy_malaria version has no 'seek'
@@ -145,7 +156,7 @@ VECTOR_FILE = "vector.csv"
 DEMOGRAPHICS_FILE = "demographics.csv"
 CASE_MANAGEMENT_FILE = "intervention_CMBN.csv"
 
-EXPERIMENT_NAME = "UWR_50yrs_With_ECM_PREG"
+EXPERIMENT_NAME = "UWR_50yrs_Trial"
 
 
 ################################################################################
@@ -178,6 +189,17 @@ STALE_CONFIG_PARAMS = ("Disable_IP_Whitelist",)
 
 
 ################################################################################
+# VECTOR BEHAVIOUR  --  MUST BE IDENTICAL IN THE PICKUP SCRIPT
+################################################################################
+
+# True  - Anthropophily and Indoor_Feeding_Fraction are read per species from
+#          vector.csv ('anthropophily', 'indoor_feeding') and written to the
+#          config.
+# False - EMOD / team defaults are used; the two CSV columns are ignored.
+APPLY_VECTOR_BEHAVIOUR = True
+
+
+################################################################################
 # BIRTH-RATE CALIBRATION TEST SETTINGS  (--test-birth)
 ################################################################################
 
@@ -187,9 +209,7 @@ TEST_SEEDS = 3
 X_BIRTH_TEST = [0.8, 0.9, 1.0, 1.1, 1.2]  # multiplies PREG_RATE_PER_MOTHER_DAY
 
 
-################################################################################
 # BURN-IN CALENDAR
-################################################################################
 
 BURNIN_START_YEAR = 1963
 BURNIN_END_YEAR = 2012
@@ -201,9 +221,7 @@ SIM_START_TIME = 0
 NUM_SEEDS = 5
 
 
-################################################################################
-# REPORT SETTINGS  (full burn-in only)
-################################################################################
+# REPORT SETTINGS
 
 REPORT_START_YEAR = 1998
 REPORT_END_YEAR = 2012
@@ -243,30 +261,13 @@ EVENT_MAX_AGE_YEARS = 45
 EXPECTED_CLIMATE_DAYS = BURNIN_DAYS
 EXPECTED_ORIGINAL_YEARS = f"{BURNIN_START_YEAR}-{BURNIN_END_YEAR}"
 
-
-################################################################################
-# CALIBRATION PARAMETER SPACE
-################################################################################
-
-# Larval habitat is Max_Larval_Capacity = 1e7 x the vector.csv column x these
-# scales (see set_param_fn). SCALE_CONSTANT is typically left as [1.0].
-#SCALE_CONSTANT = [1.0]
-
-#SCALE_TEMP_RAIN = [5.0, 10.0, 25.0, 50.0, 100.0]   # relative to CONSTANT
-#SCALE_WATER_VEG = [0.0, 0.1, 0.5, 1.0, 2.5]        # relative to CONSTANT
-
-#XTLH_RANGE = list(np.logspace(1.3010, 1.8451, 5))
-
+## CALIBRATION PARAMETER SPACE
 SCALE_CONSTANT = [1.0]
+SCALE_TEMP_RAIN = [0.5, 1.0, 2.5, 5.0]
+SCALE_WATER_VEG = [0.0, 0.1, 0.5]
 
-# Second-stage refinement
-SCALE_TEMP_RAIN = [2.5, 5.0, 7.5, 10.0]
-SCALE_WATER_VEG = [0.25, 0.5, 0.75, 1.0]
-
-# Expand beyond the previous best xTLH of 70
-XTLH_RANGE = list(np.logspace(np.log10(20), np.log10(120), 6))
-
-
+#XTLH_RANGE = list(np.logspace(0.65, 1.85, 5))   # 4.5, 9.0, 17.8, 35.5, 70.8
+XTLH_RANGE = list(np.round(np.logspace(np.log10(35.5), np.log10(90.0), 5), 3))
 habitat_df = pd.DataFrame(
     list(product(SCALE_CONSTANT, SCALE_TEMP_RAIN, SCALE_WATER_VEG)),
     columns=["scale_constant", "scale_temp_rain", "scale_water_veg"],
@@ -275,9 +276,7 @@ N_HABS = len(habitat_df)
 EXPECTED_SIMULATIONS = len(XTLH_RANGE) * N_HABS * NUM_SEEDS
 
 
-################################################################################
 # INPUT VALIDATION
-################################################################################
 
 VECTOR_PATH = os.path.join(INPUT_DIR, VECTOR_FILE)
 DEMOGRAPHICS_PATH = os.path.join(INPUT_DIR, DEMOGRAPHICS_FILE)
@@ -393,10 +392,17 @@ def get_site_node_ids():
     return _read_site_csv()["node_id"].astype(int).tolist()
 
 
-vector_df = pd.read_csv(VECTOR_PATH)
+# comment="#" ignores any trailing '# ...' text on a line, so stray notes in
+# vector.csv cannot create junk columns or break parsing.
+vector_df = pd.read_csv(VECTOR_PATH, comment="#", skipinitialspace=True)
 vector_df.columns = [c.strip() for c in vector_df.columns]
+vector_df = vector_df.dropna(how="all").reset_index(drop=True)
+vector_df["species"] = vector_df["species"].astype(str).str.strip()
 
 required_vector_columns = ["node_id", "species", "fraction", "constant", "temp_rain", "water_veg"]
+if APPLY_VECTOR_BEHAVIOUR:
+    required_vector_columns += ["anthropophily", "indoor_feeding"]
+
 missing_vector_columns = [c for c in required_vector_columns if c not in vector_df.columns]
 if missing_vector_columns:
     raise ValueError(f"{VECTOR_FILE} is missing columns: {missing_vector_columns}")
@@ -409,6 +415,12 @@ if int(vector_df["node_id"].iloc[0]) != NODE_ID:
         f"{VECTOR_FILE} contains node_id={int(vector_df['node_id'].iloc[0])}, "
         f"but the model requires node_id={NODE_ID}."
     )
+
+if APPLY_VECTOR_BEHAVIOUR:
+    for col in ["anthropophily", "indoor_feeding"]:
+        vector_df[col] = pd.to_numeric(vector_df[col], errors="raise").astype(float)
+        if ((vector_df[col] < 0) | (vector_df[col] > 1)).any():
+            raise ValueError(f"{VECTOR_FILE}: '{col}' must be between 0 and 1.")
 
 
 ################################################################################
@@ -685,9 +697,35 @@ def set_param_fn(config):
             overwrite=True,
         )
 
+    # ---------------------------------------------------------------
+    # VECTOR BEHAVIOUR
+    # Species-specific values read from vector.csv.
+    # These settings must match the pickup script.
+    # Runs after conf.add_species() so every species already exists.
+    # ---------------------------------------------------------------
+    if APPLY_VECTOR_BEHAVIOUR:
+        for _, row in vector_df.iterrows():
+            species = str(row["species"]).strip()
+
+            conf.set_species_param(
+                config,
+                species=species,
+                parameter="Anthropophily",
+                value=float(row["anthropophily"]),
+                overwrite=True,
+            )
+
+            conf.set_species_param(
+                config,
+                species=species,
+                parameter="Indoor_Feeding_Fraction",
+                value=float(row["indoor_feeding"]),
+                overwrite=True,
+            )
+
     config.parameters.Run_Number = 0
 
-    # ---- Serialization: only for the full burn-in --------------------------
+    #  Serialization: only for the full burn-in
     # The birth-rate test must not set serialization parameters at all.
     # Full burn-in: save state-18250.dtk for the pickup simulations.
     if not TEST_MODE:
@@ -696,16 +734,16 @@ def set_param_fn(config):
         config.parameters.Serialization_Mask_Node_Write = 0
         config.parameters.Serialization_Precision = "REDUCED"
 
-    # ---- Birth model and scalar ---------------------------------------------
+    #  Birth model and scalar
     # Config settings are NOT stored in the serialized state; the pickup must
     # set the same values.
     config.parameters.Birth_Rate_Dependence = BIRTH_RATE_DEPENDENCE
     config.parameters.x_Birth = X_BIRTH
 
-    # ---- Birth-rate calibration test overrides ------------------------------
+    #  Birth-rate calibration test overrides ------------------------------
     if TEST_MODE:
         config.parameters.Simulation_Duration = TEST_YEARS * DAYS_PER_YEAR
-        config.parameters.Enable_Default_Reporting = 1      # InsetChart
+        config.parameters.Enable_Default_Reporting = 0     #No InsetChart
 
     return config
 
@@ -951,6 +989,16 @@ def describe_settings():
     print(f"  x_Birth                      : {X_BIRTH:g}")
     print(f"  crude death rate             : {CRUDE_DEATH_RATE:g} per 1,000 / year (flat)")
 
+    print("\nVector behaviour (must match the pickup):")
+    print(f"  APPLY_VECTOR_BEHAVIOUR       : {APPLY_VECTOR_BEHAVIOUR}")
+    if APPLY_VECTOR_BEHAVIOUR:
+        for r in vector_df.itertuples():
+            print(f"    {r.species:<11} anthropophily {r.anthropophily:.2f}  "
+                  f"indoor feeding {r.indoor_feeding:.2f}")
+    else:
+        print("    EMOD / team defaults used; anthropophily and indoor_feeding "
+              "columns are ignored.")
+
     if TEST_MODE:
         print(f"\n*** BIRTH-RATE TEST: {TEST_YEARS} years, InsetChart ON, no serialization ***")
         print(f"  x_Birth sweep : {X_BIRTH_TEST}")
@@ -1091,6 +1139,9 @@ def general_sim(selected_platform):
         print("\nAfter the run: confirm in one simulation's folder that "
               "config.json has Birth_Rate_Dependence = INDIVIDUAL_PREGNANCIES and "
               "demographics.json has the BirthRate you set.")
+        if APPLY_VECTOR_BEHAVIOUR:
+            print("Also confirm config.json has the Anthropophily and "
+                  "Indoor_Feeding_Fraction values from vector.csv for each species.")
 
     return experiment
 

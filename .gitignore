@@ -18,3 +18,14 @@ emod-venv/
 .DS_Store
 .vscode/
 .idea/
+
+# Temporary and backup files
+*.bak
+*.tmp
+*~
+*.swp
+
+# Generated campaign previews and inspection outputs
+campaign_preview*.json
+campaign_pickup_preview.json
+pickup_mda_event_inspection.txt
