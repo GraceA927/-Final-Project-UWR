@@ -16,7 +16,8 @@ Usage
 
        python run_scenarios_UWR.py --dry-run
 
-2. Submit ONE pickup state x ALL scenarios (9 simulations with the defaults):
+2. Submit ONE pickup state x ALL scenarios (9 simulations with the defaults:
+   2 IRS coverage arms + 7 IG2 arms):
 
        python run_scenarios_UWR.py --test-one
 
@@ -29,18 +30,37 @@ Scenarios (same weather, same states, same seeds)
   2026 (common path): every arm runs IRS as in 2025 (the REFERENCE_YEAR rows
                  are repeated unless the IRS CSV has its own 2026 rows).
   From 1 Jan IRS_SWITCH_YEAR (2027) the arms diverge:
-  IRS_CONTINUE   IRS continues in every later year
-  NO_IRS         optional lower bound: no IRS and no IG2
-  IG2_<c>_<key>  IRS removed; IG2 nets distributed at coverage c (0.3 ... 0.9),
+  IRS_<c>        IRS continues at TOTAL annual coverage c (IRS_COVERAGES,
+                 default 0.95 and 1.00); product settings come from the IRS
+                 CSV rows, only the coverage is replaced. No IG2 nets.
+  IG2_<c>_<key>  IRS removed; IG2 nets distributed at coverage c (0.5 ... 1.0),
                  issued on IG2_CAMPAIGN_YEARS (2027, then every 3 years)
+  BAU            Business as usual: IRS continues at the CSV coverage and all
+                 routine programmes continue (INCLUDE_IRS_BASELINE_ARM).
+                 This is the reference arm for every paired comparison.
+  NO_IRS         IRS stopped, no replacement (INCLUDE_NO_IRS_ARM).
+
+  Case management (CM_BOOSTS): every arm above is run twice,
+    <arm>          current case management (CSV coverage)
+    <arm>_CM5      effective CM coverage (coverage x seek) + 5 percentage
+                   points from 1 Jan CM_BOOST_START_YEAR (e.g. 0.60 -> 0.65),
+                   capped at CM_MAX_COVERAGE.
+  Default design: (BAU, NO_IRS, IRS_60/80/90, IG2_60/80/90) x 2 CM = 16 arms.
+  Plots for the four policy questions: plot_scenarios_publication.py.
   Because 2026 is identical, the arms should give the same 2026 results; a
   difference before 1 Jan 2027 means something in the setup is not paired.
 
+  NOTE: IRS coverage is the share of eligible structures sprayed; IG2
+  coverage is the share of the population receiving a net. They are
+  comparable scenario levels, NOT equivalent measures of intervention
+  coverage. Report them as separate curves.
+
 What "coverage" and "effective use" mean here
 ---------------------------------------------
-c (the number in the scenario name) is the demographic coverage DISTRIBUTED in
-each IG2 campaign. IG2_USE_CURVES is True, so IG2 nets carry the MASS age and
-seasonal usage curves, and the share of people actually using an IG2 net is
+c (the number in the IG2 scenario name) is the demographic coverage
+DISTRIBUTED in each IG2 campaign. IG2_USE_CURVES is True, so IG2 nets carry
+the MASS age and seasonal usage curves, and the share of people actually
+using an IG2 net is
 
     effective use = c x net retention x age multiplier x season multiplier
 
@@ -57,8 +77,11 @@ counters (ADD_NET_USE_COUNTER) record Bednet_Using events as a diagnostic; they
 count each net separately, so they overstate the share of people using a net.
 
 Everything marked "MUST EQUAL THE PICKUP" must be identical to
-run_example_pickup_ANC.py, because config settings are NOT stored in the
-serialized state.
+Site_Setup_Final.py (the script that ran the pickup), because config settings
+are NOT stored in the serialized state. The continuing programmes (case
+management, ANC/CWC nets, SMC, IPTp, RTS,S vaccine, IRS) are built by calling
+Site_Setup_Final.py's own functions (PICKUP_SCRIPT), so they are identical to
+the pickup by construction.
 
 Pickup custom events (IMPORTANT)
 --------------------------------
@@ -109,7 +132,9 @@ Known start-up gap (identical in every arm, so the paired difference is
 barely affected): women already pregnant on day 1 get no ANC net / IPTp dose 1
 for their first ~16 weeks, because their Pregnant event happened before the
 state was written. Children already born on day 1 ARE served by the CWC
-catch-up. Use ANALYSIS_START_YEAR in the analysis script to skip warm-up.
+catch-up. RTS,S (built as in Site_Setup_Final.py) listens for Births from day 1,
+so children born in the second half of 2025 (D1 due in 2026) miss the 2026 D1
+round; this is the same start-up behaviour the pickup had in 2013. Use ANALYSIS_START_YEAR in the analysis script to skip warm-up.
 """
 
 # UWR scenario script, organized using the configuration / builder / execution
@@ -162,9 +187,14 @@ MEMORY_LIMIT = 10000
 PROJECT_DIR = "/shared/home/grace/Final-Project-UWR"
 INPUT_DIR = os.path.join(PROJECT_DIR, "inputs")
 
-# Weather for the projection (day 1 = 1 Jan PROJECTION_START_YEAR).
-CLIMATE_ROOT = os.path.join(PROJECT_DIR, "climate", "projection")
-CLIMATE_SUBDIR = ""
+# Weather for the projection: the SAME files the pickup was run and calibrated
+# with (ERA5 2013-2023, no-leap, 2024-2025 filled; 4745 days), so the climate
+# is maintained from calibration into the scenarios. Start_Time = 0, so
+# projection day 1 (1 Jan 2026) reads file day 1: 2026-2032 replays the
+# observed 2013-2019 weather, identically in every arm.
+CLIMATE_ROOT = os.path.join(INPUT_DIR, "upper_west", "climate", "2013001-2023365")
+CLIMATE_SUBDIR = "_noleap_meanT30.6_fill2025"
+CLIMATE_FILE_TEMPLATE = "dtk_15arcmin_{var}_daily_revised.bin"   # as in the pickup config
 
 VECTOR_FILE = "vector.csv"
 DEMOGRAPHICS_FILE = "demographics.csv"
@@ -183,10 +213,19 @@ USE_ITN_USAGE_CURVES = True
 ITN_AGE_FILE = "interventions_ITN_age.csv"
 ITN_SEASON_FILE = "interventions_ITN_season.csv"
 
-EXPERIMENT_NAME = "XTLH_scenarios_IG2"
+EXPERIMENT_NAME = "Pickup13yrs_Scenario_Final"
+
+# ---- Continuing programmes are built by the PICKUP script itself -------------
+# The pickup experiment (PICKUP_EXPERIMENT_ID) was run with Site_Setup_Final.py.
+# Case management, ANC/CWC nets, SMC, IPTp, RTS,S vaccine and IRS are built
+# with that script's own functions (same EMOD classes, coverage conversions and
+# event chains), its calendar moved to 2026-2032. Its input files are read
+# from INPUT_DIR; projection years missing from a file repeat REFERENCE_YEAR.
+PICKUP_SCRIPT = "Site_Setup_Final"
+PROJECTION_INPUT_DIR = os.path.join(INPUT_DIR, "_projection_inputs")   # generated
 
 # Finished PICKUP experiment (it wrote state-04745.dtk).
-PICKUP_EXPERIMENT_ID = "15e29eea-2371-4237-adee-a854d627d137"
+PICKUP_EXPERIMENT_ID = "48201665-bccb-4fb0-acc7-b398c2569ab5"
 PICKUP_FILTER = {}
 
 # After calibration: CSV of the parameter sets to carry forward, with columns
@@ -227,11 +266,31 @@ DORMANT_EVENT_START_DAY = 100000
 
 # IG2 demographic coverage DISTRIBUTED in each campaign (c). Effective use is
 # c x net retention x age multiplier x season multiplier (see the docstring).
-IG2_COVERAGES = [0.30, 0.40, 0.50, 0.60, 0.70, 0.80, 0.90]
+# WHO 60,80 and 90% coverage targets
+IG2_COVERAGES = [0.60, 0.80,0.90]
 # Add e.g. [0.35, 0.45, 0.55, 0.65, 0.75, 0.85] to pin down the threshold.
 EXTRA_IG2_COVERAGES = []
 
-INCLUDE_NO_IRS_ARM = True
+# IRS continuation at a fixed TOTAL annual coverage from IRS_SWITCH_YEAR on.
+# Product settings (Clothianidin, kill decay 180 d, 1 round on 4 April) come
+# from the IRS CSV rows; only the coverage is replaced. No IG2 nets in these
+# arms. IRS coverage (share of eligible structures sprayed) and IG2 coverage
+# (share of the population receiving a net) are comparable scenario levels,
+# NOT equivalent measures of intervention coverage.
+IRS_COVERAGES = [0.60, 0.80,0.90]
+
+# Optional reference arms, OFF for this run (set True to add them back).
+INCLUDE_IRS_BASELINE_ARM = True    # BAU: IRS at the CSV coverage (reference arm)
+INCLUDE_NO_IRS_ARM = True          # NO_IRS: IRS stopped, no IG2 replacement
+BAU_ARM_NAME = "BAU"               # MUST MATCH BASELINE in analyze_scenarios_UWR.py
+
+# Case-management variants. Every arm is run once per entry. 0.0 = current CM;
+# 0.05 = effective CM coverage (coverage x seek) raised by 5 percentage points
+# from 1 Jan CM_BOOST_START_YEAR (2026 stays a common path in every arm).
+CM_BOOSTS = [0.0, 0.05]
+CM_BOOST_START_YEAR = 2027
+CM_BOOST_SEVERE = False            # True: also raise severe-case treatment
+CM_MAX_COVERAGE = 1.0
 
 # IG2 parameters from the study. discard_k / discard_l and IG2_CAMPAIGN_DOY
 # must also be set in analyze_scenarios_UWR.py (effective-use calculation).
@@ -251,7 +310,8 @@ IG2_KILL_RUN = ["cfp"]
 # COMMON PATH: until IRS_SWITCH_YEAR every arm (including the IG2 arms) runs
 # IRS exactly as in the reference year (2026 repeats 2025 unless the IRS CSV
 # has its own 2026 rows). From 1 Jan IRS_SWITCH_YEAR the arms diverge:
-# IRS_CONTINUE keeps IRS, NO_IRS drops it, IG2 arms replace it with IG2.
+# IRS_<c> arms keep IRS at coverage c, IG2 arms replace IRS with IG2
+# (and the optional NO_IRS arm drops IRS).
 IRS_SWITCH_YEAR = 2027
 
 # Mass IG2 distributions (on or after IRS_SWITCH_YEAR). Mean net life is
@@ -263,7 +323,7 @@ IG2_CAMPAIGN_DOY = 91         # day of year of the distribution (91 = 1 Apr)
 # effective use = c x retention x age multiplier x season multiplier.
 # False: usage multiplier = 1, so effective use at distribution = c.
 # Independent of USE_ITN_USAGE_CURVES (which only concerns routine ANC/CWC nets).
-IG2_USE_CURVES = True
+IG2_USE_CURVES = False
 
 # Count net-use events per day (all nets). Diagnostic only: each net is counted
 # separately, so this overstates the share of people using a net.
@@ -332,7 +392,7 @@ EVENT_LIST = [
     "Pregnant", "GaveBirth",
 ]
 EVENT_MIN_AGE_YEARS = 0
-EVENT_MAX_AGE_YEARS = 100
+EVENT_MAX_AGE_YEARS = 115           # same as the pickup (PICKUP_EVENT_MAX_AGE)
 
 
 # =============================================================================
@@ -882,7 +942,7 @@ def describe_schedules(sched):
     print(f"\nProjection inputs, {PROJ_START}-{PROJ_END} (day 1 = 1 Jan {PROJ_START}, "
           f"{PROJ_DAYS} days):")
     for key, label in [("cm", "Case management"), ("itn_anc", "ITN-ANC"),
-                       ("itn_cwc", "ITN-CWC"), ("irs", "IRS (baseline arm)"),
+                       ("itn_cwc", "ITN-CWC"), ("irs", "IRS (product settings)"),
                        ("smc", "SMC"), ("iptp", "IPTp"), ("vaccine", "Vaccine")]:
         df = sched[key]
         if df is None:
@@ -1146,22 +1206,27 @@ def _read_site_definition():
 # =============================================================================
 
 CLIMATE_VARS = ["air_temperature", "land_temperature", "rainfall", "relative_humidity"]
-CLIMATE_FILES = [f"{v}.bin{ext}" for v in CLIMATE_VARS for ext in ("", ".json")]
+def climate_file(var):
+    return CLIMATE_FILE_TEMPLATE.format(var=var)
+
+
+CLIMATE_FILES = [climate_file(v) + ext for v in CLIMATE_VARS for ext in ("", ".json")]
 
 
 def resolve_climate_dir():
     if CLIMATE_SUBDIR:
         return os.path.join(CLIMATE_ROOT, CLIMATE_SUBDIR)
-    if os.path.isfile(os.path.join(CLIMATE_ROOT, "air_temperature.bin")):
+    if os.path.isfile(os.path.join(CLIMATE_ROOT, climate_file("air_temperature"))):
         return CLIMATE_ROOT
     if not os.path.isdir(CLIMATE_ROOT):
         raise FileNotFoundError(f"Projection climate folder does not exist:\n{CLIMATE_ROOT}")
     found = [d for d in sorted(os.listdir(CLIMATE_ROOT))
-             if os.path.isfile(os.path.join(CLIMATE_ROOT, d, "air_temperature.bin"))]
+             if os.path.isfile(os.path.join(CLIMATE_ROOT, d, climate_file("air_temperature")))]
     if len(found) == 1:
         return os.path.join(CLIMATE_ROOT, found[0])
     if not found:
-        raise FileNotFoundError(f"No air_temperature.bin in {CLIMATE_ROOT} or its subfolders.")
+        raise FileNotFoundError(f"No {climate_file('air_temperature')} in {CLIMATE_ROOT} "
+                                f"or its subfolders.")
     raise ValueError(f"Several weather folders in {CLIMATE_ROOT}: {found}. Set CLIMATE_SUBDIR.")
 
 
@@ -1172,14 +1237,16 @@ def validate_climate(climate_dir):
             raise FileNotFoundError(f"Missing climate file:\n{path}")
 
     for var in CLIMATE_VARS:
-        with open(os.path.join(climate_dir, f"{var}.bin.json")) as f:
+        with open(os.path.join(climate_dir, climate_file(var) + ".json")) as f:
             meta = json.load(f).get("Metadata", {})
         count = meta.get("DatavalueCount")
         if count is not None and int(count) < PROJ_DAYS:
             raise ValueError(f"{var}: weather has {count} days but the projection "
                              f"needs {PROJ_DAYS}; EMOD would wrap to the start of the file.")
-    print(f"Climate: {climate_dir}  (day 1 must be 1 Jan {PROJ_START}; "
-          f"the SAME weather is used in every arm)")
+    print(f"Climate: {climate_dir}")
+    print(f"  files {CLIMATE_FILE_TEMPLATE.format(var='<var>')} (same as the pickup); "
+          f"{PROJ_START}-{PROJ_END} uses file days 1-{PROJ_DAYS}; "
+          f"the SAME weather is used in every arm")
 
 
 # =============================================================================
@@ -1206,7 +1273,8 @@ def merge_pickup_events_into_config(config, label=""):
     Returns the number of events that had to be added.
     """
     existing = list(getattr(config.parameters, "Custom_Individual_Events", []) or [])
-    merged = sorted(set(existing) | set(PICKUP_CUSTOM_EVENTS))
+    projection = projection_custom_events() if SF is not None else []
+    merged = sorted(set(existing) | set(PICKUP_CUSTOM_EVENTS) | set(projection))
     added = len(merged) - len(set(existing))
     config.parameters.Custom_Individual_Events = merged
     if label:
@@ -1229,10 +1297,10 @@ def set_param_fn(config):
     config.parameters.Simulation_Duration = PROJ_DAYS
 
     config.parameters.Climate_Model = "CLIMATE_BY_DATA"
-    config.parameters.Air_Temperature_Filename = os.path.join("climate", "air_temperature.bin")
-    config.parameters.Land_Temperature_Filename = os.path.join("climate", "land_temperature.bin")
-    config.parameters.Rainfall_Filename = os.path.join("climate", "rainfall.bin")
-    config.parameters.Relative_Humidity_Filename = os.path.join("climate", "relative_humidity.bin")
+    config.parameters.Air_Temperature_Filename = os.path.join("climate", climate_file("air_temperature"))
+    config.parameters.Land_Temperature_Filename = os.path.join("climate", climate_file("land_temperature"))
+    config.parameters.Rainfall_Filename = os.path.join("climate", climate_file("rainfall"))
+    config.parameters.Relative_Humidity_Filename = os.path.join("climate", climate_file("relative_humidity"))
 
     config.parameters.Enable_Default_Reporting = 1   # InsetChart (daily population)
 
@@ -1495,7 +1563,8 @@ def register_pickup_events(campaign):
     skipped; the rest get a dormant registration event.
     Returns the list of events registered this way.
     """
-    events = pickup_family_events()
+    events = sorted(set(pickup_family_events()) |
+                    (set(projection_custom_events()) if SF is not None else set()))
     if not events:
         return []
 
@@ -1526,7 +1595,7 @@ def install_event_patch(simulation):
     Second safety layer. After emodpy's pre_creation has rebuilt the config,
     union the pickup events into Custom_Individual_Events again.
     """
-    if not (PATCH_CONFIG_EVENTS and PICKUP_CUSTOM_EVENTS):
+    if not PATCH_CONFIG_EVENTS:
         return
 
     task = simulation.task
@@ -1706,7 +1775,7 @@ def add_cwc_catchup(campaign, df):
 
 
 # =============================================================================
-# IRS (baseline arm) AND IG2 (replacement arms)
+# IRS (continuation arms) AND IG2 (replacement arms)
 # =============================================================================
 
 def add_irs(campaign, df):
@@ -1730,6 +1799,24 @@ def add_irs(campaign, df):
             repelling_decay_time_constant=float(r.repelling_decay),
             insecticide="",
         )
+
+
+def rescale_irs_coverage(df, target):
+    """
+    Set the TOTAL IRS coverage of EVERY year to `target`, keeping the CSV's
+    split between rows (products / rounds) where the CSV total is > 0 and
+    splitting equally otherwise. A year whose CSV coverage is 0 (e.g. a 2027
+    row of 0.0) therefore still gets `target`: IRS_<c> means IRS at c in every
+    year from IRS_SWITCH_YEAR. target=None returns the rows unchanged (BAU).
+    """
+    if not has_rows(df) or target is None:
+        return df
+    df = df.copy()
+    total = df.groupby("year")["cov"].transform("sum")
+    n_rows = df.groupby("year")["cov"].transform("size")
+    share = np.where(total > 0, df["cov"] / total.where(total > 0, 1.0), 1.0 / n_rows)
+    df["cov"] = (float(target) * share).clip(0.0, 1.0)
+    return df
 
 
 def ig2_campaign_days():
@@ -1917,14 +2004,49 @@ def scenario_label(c):
     return f"{int(round(c * 100))}"
 
 
+def cm_suffix(boost):
+    """'' for current CM, '_CM5' for +5 percentage points."""
+    return "" if not boost else f"_CM{int(round(boost * 100))}"
+
+
+def boost_case_management(df, boost):
+    """
+    Raise effective CM coverage (coverage x seek) by `boost` (absolute, e.g.
+    0.05 = +5 percentage points) for rows of year >= CM_BOOST_START_YEAR.
+    Severe-case rows are changed only if CM_BOOST_SEVERE. Capped at CM_MAX_COVERAGE.
+    """
+    if not boost or not has_rows(df):
+        return df
+    df = df.copy()
+    rows = df["year"].astype(int) >= CM_BOOST_START_YEAR
+    if not CM_BOOST_SEVERE:
+        rows &= ~df["is_severe"]
+    df.loc[rows, "effective_coverage"] = np.minimum(
+        df.loc[rows, "effective_coverage"].astype(float) + float(boost), CM_MAX_COVERAGE)
+    return df
+
+
 def build_scenarios():
-    scenarios = [dict(name="IRS_CONTINUE", kind="irs", coverage=0.0, kill_key="")]
+    scenarios = []
+
+    # Optional reference arms (off by default).
+    if INCLUDE_IRS_BASELINE_ARM:
+        scenarios.append(dict(name=BAU_ARM_NAME, kind="irs", coverage=0.0,
+                              irs_coverage=None, kill_key=""))
 
     if INCLUDE_NO_IRS_ARM:
-        scenarios.append(dict(name="NO_IRS", kind="none", coverage=0.0, kill_key=""))
+        scenarios.append(dict(name="NO_IRS", kind="none", coverage=0.0,
+                              irs_coverage=None, kill_key=""))
 
+    # IRS continuation at a fixed total annual coverage, no IG2 nets.
+    for c in sorted({round(float(c), 4) for c in IRS_COVERAGES}):
+        if not 0 < c <= 1:
+            raise ValueError(f"IRS coverage {c} must be in (0, 1].")
+        scenarios.append(dict(name=f"IRS_{scenario_label(c)}", kind="irs",
+                              coverage=0.0, irs_coverage=c, kill_key=""))
+
+    # IG2 replacement arms (IRS removed from IRS_SWITCH_YEAR).
     coverages = sorted({round(float(c), 4) for c in IG2_COVERAGES + EXTRA_IG2_COVERAGES})
-
     for key in IG2_KILL_RUN:
         if key not in IG2_KILL_DECAY:
             raise ValueError(f"IG2_KILL_RUN key '{key}' not in IG2_KILL_DECAY.")
@@ -1932,7 +2054,21 @@ def build_scenarios():
             if not 0 < c <= 1:
                 raise ValueError(f"IG2 coverage {c} must be in (0, 1].")
             scenarios.append(dict(name=f"IG2_{scenario_label(c)}_{key}", kind="ig2",
-                                  coverage=c, kill_key=key))
+                                  coverage=c, irs_coverage=None, kill_key=key))
+
+    if not scenarios:
+        raise ValueError("No scenarios selected: check IRS_COVERAGES, IG2_COVERAGES "
+                         "and the INCLUDE_* flags.")
+
+    # Every arm x every case-management level.
+    boosts = sorted({round(float(b), 4) for b in CM_BOOSTS})
+    if not boosts or any(not 0 <= b < 1 for b in boosts):
+        raise ValueError(f"CM_BOOSTS {CM_BOOSTS} must be in [0, 1).")
+    scenarios = [dict(s, strategy=s["name"], cm_boost=b, name=s["name"] + cm_suffix(b))
+                 for b in boosts for s in scenarios]
+    names = [s["name"] for s in scenarios]
+    if len(names) != len(set(names)):
+        raise ValueError(f"Duplicate scenario names: {names}")
     return scenarios
 
 
@@ -1940,8 +2076,12 @@ def describe_scenarios(scenarios):
     print("\nScenarios (identical weather, states, seeds and other programmes):")
     for s in scenarios:
         if s["kind"] == "irs":
-            what = (f"IRS continues after {IRS_SWITCH_YEAR} too "
-                    f"({REFERENCE_YEAR} rows repeated if the CSV has no projection rows)")
+            if s.get("irs_coverage") is None:
+                what = (f"IRS continues after {IRS_SWITCH_YEAR} at the CSV coverage "
+                        f"({REFERENCE_YEAR} rows repeated if the CSV has no projection rows)")
+            else:
+                what = (f"IRS continues after {IRS_SWITCH_YEAR} at total annual coverage "
+                        f"{s['irs_coverage']:.2f}; no IG2 nets")
         elif s["kind"] == "none":
             what = f"no IRS and no IG2 from 1 Jan {IRS_SWITCH_YEAR} (lower bound)"
         else:
@@ -1949,7 +2089,14 @@ def describe_scenarios(scenarios):
                     f"{s['coverage']:.2f} on "
                     f"{', '.join(fmt_day(d) for d in ig2_campaign_days())}; "
                     f"kill decay {IG2_KILL_DECAY[s['kill_key']]:g} d")
+        if s.get("cm_boost"):
+            what += (f"; CM +{s['cm_boost']*100:g} pp from {CM_BOOST_START_YEAR}"
+                     f"{' (incl. severe)' if CM_BOOST_SEVERE else ''}")
         print(f"  {s['name']:<16} {what}")
+
+    print("\n  NOTE: IRS coverage (share of structures sprayed) and IG2 coverage "
+          "(share of people receiving a net) are comparable scenario levels, "
+          "not equivalent measures.")
 
     cycle = (int(IG2_CAMPAIGN_YEARS[1] - IG2_CAMPAIGN_YEARS[0]) * DAYS_PER_YEAR
              if len(IG2_CAMPAIGN_YEARS) > 1 else 3 * DAYS_PER_YEAR)
@@ -1967,16 +2114,137 @@ def describe_scenarios(scenarios):
 
 
 # =============================================================================
+# CONTINUING PROGRAMMES FROM THE PICKUP SCRIPT (Site_Setup_Final.py)
+# =============================================================================
+
+SF = None                 # the imported pickup script, calendar moved to the projection
+ROLLED_FORWARD = {}       # file -> projection years filled from REFERENCE_YEAR
+
+
+def write_projection_inputs(sf):
+    """
+    Write the pickup script's input files for PROJ_START..PROJ_END into
+    PROJECTION_INPUT_DIR. A year that has its own rows (any phase in
+    PHASES_ACCEPTED) keeps them; a missing year repeats REFERENCE_YEAR's rows.
+    Rows are labelled phase='pickup' (what the pickup loaders read) and
+    start_day is reduced to day of year.
+    """
+    import shutil
+    os.makedirs(PROJECTION_INPUT_DIR, exist_ok=True)
+    ROLLED_FORWARD.clear()
+    files = [sf.CM_FILE, sf.ITN_ANC, sf.ITN_CWC, sf.IRS_FILE, sf.SMC_FILE,
+             sf.IPTP_FILE, sf.VACCINE_FILE] + ([sf.ITN_FILE] if sf.ITN_FILE else [])
+    for name in files:
+        src = os.path.join(INPUT_DIR, name)
+        dst = os.path.join(PROJECTION_INPUT_DIR, name)
+        if not os.path.isfile(src):
+            if os.path.exists(dst):
+                os.remove(dst)
+            continue
+        df = sf.keep_node(sf.read_clean_csv(src)).copy()
+        if "phase" in df.columns:
+            df = df[df["phase"].astype(str).str.lower().isin(PHASES_ACCEPTED)]
+        df["year"] = df["year"].astype(int)
+        pieces, rolled = [], []
+        for y in range(PROJ_START, PROJ_END + 1):
+            own = df[df["year"] == y]
+            if own.empty:
+                own = df[df["year"] == REFERENCE_YEAR].copy()
+                if own.empty:
+                    raise ValueError(f"{name}: no rows for {y} and none for REFERENCE_YEAR "
+                                     f"{REFERENCE_YEAR} to repeat.")
+                own["year"] = y
+                rolled.append(y)
+            pieces.append(own)
+        out = pd.concat(pieces, ignore_index=True)
+        if "phase" in out.columns:
+            out["phase"] = "pickup"
+        if "start_day" in out.columns:
+            out["start_day"] = (out["start_day"].astype(int) - 1) % DAYS_PER_YEAR + 1
+        out.to_csv(dst, index=False)
+        ROLLED_FORWARD[name] = rolled
+    for name in (sf.ITN_AGE_FILE, sf.ITN_SEASON_FILE):
+        if name and os.path.isfile(os.path.join(INPUT_DIR, name)):
+            shutil.copy(os.path.join(INPUT_DIR, name), os.path.join(PROJECTION_INPUT_DIR, name))
+
+
+def load_pickup_script():
+    """Import the pickup script, move its calendar to the projection, load schedules."""
+    import importlib
+    sf = importlib.import_module(PICKUP_SCRIPT)
+    write_projection_inputs(sf)
+    sf.PICKUP_START_YEAR = PROJ_START
+    sf.PICKUP_END_YEAR = PROJ_END
+    sf.PICKUP_DAYS = PROJ_DAYS
+    sf.PHASE_DAYS = dict(sf.PHASE_DAYS, pickup=PROJ_DAYS)
+    sf.INPUT_DIR = PROJECTION_INPUT_DIR
+    if sf.USE_ITN_USAGE_CURVES:
+        sf.ITN_USAGE = sf.load_itn_usage()
+    sf.SCHEDULES = sf.load_schedules()
+    sf.CM_PICKUP, _ = sf.load_case_management_pickup()
+    VACCINE_ISSUES.clear()
+    VACCINE_ISSUES.update(sf.VACCINE_ISSUES)
+    return sf
+
+
+def load_all_schedules():
+    """Projection schedules, loaded by the pickup script's own loaders."""
+    global SF
+    SF = load_pickup_script()
+    s = SF.SCHEDULES
+    return {"cm": SF.CM_PICKUP, "itn_anc": s["anc"], "itn_cwc": s["cwc"], "mass": s["mass"],
+            "irs": s["irs"], "smc": s["smc"], "iptp": s["iptp"], "vaccine": s["vac"]}
+
+
+def describe_schedules(sched):
+    print(f"\nProjection inputs, {PROJ_START}-{PROJ_END} (day 1 = 1 Jan {PROJ_START}, "
+          f"{PROJ_DAYS} days), built with {PICKUP_SCRIPT}.py (same code as the pickup):")
+    files = {"cm": SF.CM_FILE, "itn_anc": SF.ITN_ANC, "itn_cwc": SF.ITN_CWC,
+             "irs": SF.IRS_FILE, "smc": SF.SMC_FILE, "iptp": SF.IPTP_FILE,
+             "vaccine": SF.VACCINE_FILE}
+    for key, label in [("cm", "Case management"), ("itn_anc", "ITN-ANC"),
+                       ("itn_cwc", "ITN-CWC"), ("irs", "IRS"), ("smc", "SMC"),
+                       ("iptp", "IPTp"), ("vaccine", "Vaccine (RTS,S)")]:
+        v = sched[key]
+        if v is None or len(v) == 0:
+            print(f"  {label}: none")
+            continue
+        years = sorted({int(r["year"]) for r in v} if isinstance(v, list)
+                       else {int(y) for y in v["year"]})
+        rolled = ROLLED_FORWARD.get(files[key], [])
+        note = f"; {len(rolled)} year(s) repeat {REFERENCE_YEAR}" if rolled else ""
+        print(f"  {label:<16} {len(v):>3} row(s)/cohort(s), years {years[0]}-{years[-1]}{note}")
+    irs = sched["irs"]
+    if has_rows(irs):
+        print("  IRS coverage by year (CSV / BAU arm): " +
+              ", ".join(f"{int(r.year)}={r.cov:.3f}" for r in irs.itertuples()))
+        zero = sorted(int(y) for y in irs.loc[(irs["year"] >= IRS_SWITCH_YEAR)
+                                              & (irs["cov"] <= 0), "year"])
+        if zero:
+            print(f"  NOTE: IRS coverage is 0 in {zero} in {IRS_FILE}: the BAU arm has no "
+                  f"IRS in those years; IRS_<c> arms still get c (rescale_irs_coverage).")
+    print(f"  Generated input files: {PROJECTION_INPUT_DIR}")
+
+
+def projection_custom_events():
+    """Custom events the projection campaign broadcasts or listens for."""
+    events = set(SF.pickup_custom_events()) | {"Received_ITN_IG2"}
+    return sorted(events)
+
+
+# =============================================================================
 # CAMPAIGN BUILDER
 # =============================================================================
 
 def build_camp(habitat_mix=(1.0, 1.0, 1.0), scenario=None):
     """
     Complete campaign for one scenario. `scenario` is a dict from
-    build_scenarios(); None means the IRS_CONTINUE baseline.
+    build_scenarios(); None means IRS continuing at the CSV coverage.
     """
     if scenario is None:
-        scenario = dict(name="IRS_CONTINUE", kind="irs", coverage=0.0, kill_key="")
+        scenario = dict(name=BAU_ARM_NAME, kind="irs", coverage=0.0,
+                        irs_coverage=None, kill_key="", strategy=BAU_ARM_NAME,
+                        cm_boost=0.0)
 
     if hasattr(camp, "reset"):
         camp.reset()
@@ -1984,35 +2252,41 @@ def build_camp(habitat_mix=(1.0, 1.0, 1.0), scenario=None):
     reset_mda_ids()      # MDA_Now ids are unique within ONE campaign only
 
     s = SCHEDULES
+    sf = SF                       # pickup script (Site_Setup_Final.py) builders
 
-    add_pregnancy_tracking(camp)
+    sf.add_pregnancy_tracking(camp)
     add_scale_larval_habitats(camp, df=scale_habitat_from_mix(habitat_mix),
                               start_day=1, repetitions=-1)
 
-    # Held identical in every arm.
-    add_case_management(camp, s["cm"])
-    if has_rows(s["itn_anc"]):
-        add_routine_itns(camp, s["itn_anc"], "ANC")
-    if has_rows(s["itn_cwc"]):
-        add_routine_itns(camp, s["itn_cwc"], "CWC")
-        add_cwc_catchup(camp, s["itn_cwc"])
-    if has_rows(s["smc"]):
-        add_smc(camp, s["smc"])
-    if has_rows(s["iptp"]):
-        add_iptp(camp, s["iptp"])
-    if has_rows(s["vaccine"]):
-        add_vaccine(camp, s["vaccine"])
+    # Case management: identical in every arm except the +CM_BOOSTS variants,
+    # which differ only from CM_BOOST_START_YEAR.
+    sf.add_case_management(camp, boost_case_management(s["cm"], scenario.get("cm_boost", 0.0)))
 
-    # IRS. Common path: rows before IRS_SWITCH_YEAR are in EVERY arm.
+    # Held identical in every arm, built exactly as in the pickup.
+    if has_rows(s["itn_anc"]):
+        sf.add_routine_anc(camp, s["itn_anc"])
+    if has_rows(s["itn_cwc"]):
+        sf.add_routine_cwc(camp, s["itn_cwc"])
+    if has_rows(s["mass"]):
+        sf.add_mass_itn(camp, s["mass"])
+    if has_rows(s["smc"]):
+        sf.add_smc(camp, s["smc"])
+    if s["iptp"]:
+        sf.add_iptp(camp, s["iptp"])
+    if s["vaccine"]:
+        sf.add_vaccine(camp, s["vaccine"])
+
+    # IRS (pickup's raw IRSHousingModification + Received_IRS). Common path:
+    # rows before IRS_SWITCH_YEAR are in EVERY arm, never rescaled.
     if not has_rows(s["irs"]):
         raise ValueError("No IRS rows: check IRS_FILE and REFERENCE_YEAR.")
 
-    irs_before = s["irs"][s["irs"]["year"] < IRS_SWITCH_YEAR]
-    add_irs(camp, irs_before)
+    sf.add_irs(camp, s["irs"][s["irs"]["year"] < IRS_SWITCH_YEAR])
 
     # Scenario-specific part, from 1 Jan IRS_SWITCH_YEAR.
     if scenario["kind"] == "irs":
-        add_irs(camp, s["irs"][s["irs"]["year"] >= IRS_SWITCH_YEAR])
+        irs_after = s["irs"][s["irs"]["year"] >= IRS_SWITCH_YEAR]
+        sf.add_irs(camp, rescale_irs_coverage(irs_after, scenario.get("irs_coverage")))
     elif scenario["kind"] == "ig2":
         add_ig2(camp, scenario["coverage"], IG2_KILL_DECAY[scenario["kill_key"]])
     elif scenario["kind"] != "none":
@@ -2241,6 +2515,7 @@ def update_simulation(simulation, pair, df):
     # Safety layer: keep the pickup events in the config after pre_creation.
     install_event_patch(simulation)
 
+    irs_cov = scenario.get("irs_coverage")
     return {
         "Run_Number": seed,
         "pickup_sim_index": int(x),
@@ -2251,7 +2526,10 @@ def update_simulation(simulation, pair, df):
         "scenario": scenario["name"],
         "scenario_kind": scenario["kind"],
         "ig2_coverage": float(scenario["coverage"]),
+        "irs_coverage": float(irs_cov) if irs_cov is not None else np.nan,
         "ig2_kill_key": scenario["kill_key"],
+        "strategy": scenario.get("strategy", scenario["name"]),
+        "cm_boost": float(scenario.get("cm_boost", 0.0)),
         "projection_start_year": PROJ_START,
     }
 
@@ -2261,45 +2539,11 @@ def update_simulation(simulation, pair, df):
 # =============================================================================
 
 def recorder_events():
-    events = list(EVENT_LIST)
-
-    from emodpy_malaria.interventions.usage_dependent_bednet import (
-        add_triggered_usage_dependent_bednet)
-
-    if "broadcast_event" in inspect.signature(add_triggered_usage_dependent_bednet).parameters:
-        if has_rows(SCHEDULES["itn_anc"]):
-            events.append("Received_ITN_ANC")
-        if has_rows(SCHEDULES["itn_cwc"]):
-            events.extend(["Received_ITN_CWC", "Received_ITN_CWC_Catchup"])
-        events.append("Received_ITN_IG2")
-    else:
-        # No named event is available; all nets (routine and IG2) broadcast
-        # this built-in event instead.
-        events.append("Bednet_Got_New_One")
-
-    if ANC_CHECK_PREGNANT_AT_DELIVERY and has_rows(SCHEDULES["itn_anc"]):
-        for r in SCHEDULES["itn_anc"].itertuples():
-            if anc_year_window(r.year_start_day):
-                events.append(anc_visit_event_name(r.year))
-
-    if has_rows(SCHEDULES["itn_cwc"]):
-        for r in SCHEDULES["itn_cwc"].itertuples():
-            if cwc_year_window(r.year_start_day):
-                events.append(cwc_visit_event_name(r.year))
-
-    if has_rows(SCHEDULES["smc"]):
-        events.append("Received_SMC")
-
-    if has_rows(SCHEDULES["iptp"]):
-        events.extend(f"Received_IPTp_D{n}_{int(y)}"
-                      for y, doses in zip(SCHEDULES["iptp"]["year"], SCHEDULES["iptp"]["doses"])
-                      for n, _, cond in doses if cond > 0)
-
-    if has_rows(SCHEDULES["vaccine"]):
-        v = SCHEDULES["vaccine"]
-        events.extend(sorted(f"Received_Vaccine_{d}_{int(y)}"
-                             for d, y in zip(v["dose"], v["year"])))
-
+    """The pickup's recorded events (Site_Setup_Final.pickup_recorded_events) + IG2."""
+    events = list(SF.pickup_recorded_events())
+    if SF._bednet_accepts_event():
+        events += ["Received_ITN_ANC", "Received_ITN_CWC", "Received_ITN_CWC_Catchup",
+                   "Received_ITN_IG2"]
     return list(dict.fromkeys(events))
 
 
@@ -2358,7 +2602,7 @@ def full_experiment_name():
 # =============================================================================
 
 def parse_args():
-    parser = argparse.ArgumentParser(description="UWR IRS-to-IG2 scenarios.")
+    parser = argparse.ArgumentParser(description="UWR IRS-coverage and IG2 replacement scenarios.")
     parser.add_argument("--dry-run", action="store_true",
                         help="Check inputs, print scenarios, write two campaign previews, stop.")
     parser.add_argument("--test-one", action="store_true",
@@ -2481,8 +2725,8 @@ def general_sim(selected_platform, pickup_id, climate_dir, test_one=False):
 def campaign_counts(c):
     """Counts of IRS / IG2 / other net objects in a built campaign (preview check)."""
     text = json.dumps(c.campaign_dict)
-    return {"IRS events": text.count("IRSHousingModification"),
-            "IG2 nets": text.count("ITN_IG2")}
+    return {"IRS events": text.count('"class": "IRSHousingModification"'),
+            "IG2 nets": text.count('"Intervention_Name": "ITN_IG2"')}
 
 
 # =============================================================================
@@ -2538,7 +2782,7 @@ if __name__ == "__main__":
 
     if not has_rows(SCHEDULES["irs"]):
         msg = (f"No IRS rows available ({IRS_FILE}, REFERENCE_YEAR {REFERENCE_YEAR}): "
-               f"the IRS_CONTINUE baseline cannot be built.")
+               f"the IRS arms and the common 2026 IRS path cannot be built.")
         if args.dry_run:
             print(f"\n  WARNING: {msg}")
         else:
@@ -2555,14 +2799,15 @@ if __name__ == "__main__":
         print(f"  Net-use counter: {'ON' if ADD_NET_USE_COUNTER else 'OFF'}")
 
         print("\nPreview check (habitat mix placeholder 1.0, 1.0, 1.0):")
-        previews = [SCENARIOS[0]] + [s for s in SCENARIOS if s["kind"] == "ig2"][:1]
+        previews = ([s for s in SCENARIOS if s["kind"] == "irs"][:1]
+                    + [s for s in SCENARIOS if s["kind"] == "ig2"][:1])
         for sc in previews:
             build_camp(habitat_mix=(1.0, 1.0, 1.0), scenario=sc)
             out = f"campaign_preview_{sc['name']}.json"
             camp.save(out)
             print(f"  {sc['name']:<14} {campaign_counts(camp)}  -> {out}")
 
-        # The drug-campaign ids restart for every build, so building all armss in a
+        # The drug-campaign ids restart for every build, so building all arms in a
         # row must never exhaust them (this was the failure in the full run).
         for sc in SCENARIOS:
             build_camp(habitat_mix=(1.0, 1.0, 1.0), scenario=sc)
@@ -2573,9 +2818,9 @@ if __name__ == "__main__":
         print(f"\nEvent recorder will record {len(events)} events.")
         print("Pickup event registration is skipped in a dry run (the pickup configs "
               "are only read at submission).")
-        print(f"\nExpected: IRS_CONTINUE has IRS in every year and no IG2 nets. The IG2 "
+        print(f"\nExpected: IRS_<c> arms have IRS in every year and no IG2 nets. The IG2 "
               f"preview has IRS only for years before {IRS_SWITCH_YEAR} (fewer IRS "
-              f"events than IRS_CONTINUE, not zero) and IG2 nets > 0.")
+              f"events than the IRS_<c> arms, not zero) and IG2 nets > 0.")
         print("Dry run OK. Nothing submitted.")
         sys.exit(0)
 

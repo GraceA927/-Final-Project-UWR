@@ -1,0 +1,13 @@
+node_id,phase,year,month,start_day,coverage,insecticide,killing_initial_effect,killing_box_duration,killing_decay_time_constant,repelling_initial_effect,repelling_box_duration,repelling_decay_time_constant,repetitions,timesteps_between_repetitions
+1,pickup,2015,April,821,0.245,Pirimiphos-methyl,1.0,0,180,0.0,0,90,1,365
+1,pickup,2016,April,1187,0.108,Pirimiphos-methyl,1.0,0,180,0.0,0,90,1,365
+1,pickup,2017,April,1552,0.196,Pirimiphos-methyl,1.0,0,180,0.0,0,90,1,365
+1,pickup,2018,April,1917,0.455,Clothianidin,1.0,0,180,0.0,0,90,1,365
+1,pickup,2019,April,2282,0.025,Clothianidin,1.0,0,180,0.0,0,90,1,365
+1,pickup,2020,March,2617,0.114,Clothianidin,1.0,0,180,0.0,0,90,1,365
+1,pickup,2021,March,2982,0.401,Clothianidin,1.0,0,180,0.0,0,90,1,365
+1,pickup,2022,April,3378,0.002,Clothianidin,1.0,0,180,0.0,0,90,1,365
+1,pickup,2023,March,3712,0.002,Clothianidin,1.0,0,180,0.0,0,90,1,365
+1,pickup,2024,April,4109,0.002,Clothianidin,1.0,0,180,0.0,0,90,1,365
+1,pickup,2025,April,4474,0.002,Clothianidin,1.0,0,180,0.0,0,90,1,365
+1,scenario,2026,April,4839,0.20,Clothianidin,1.0,0,180,0.0,0,90,1,365

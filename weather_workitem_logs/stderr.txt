@@ -1,0 +1,4 @@
+[Errno 2] No such file or directory: b'/mnt/rivendell/archive/LargeData/Data/ERA5/daily/airtemp/2024/airtemp2024159.nc'
+[Errno 2] No such file or directory: b'/mnt/rivendell/archive/LargeData/Data/ERA5/daily/humid/2024/humid2024179.nc'
+[Errno 2] No such file or directory: b'/mnt/rivendell/archive/LargeData/Data/ERA5/daily/rainfall/2024/rainfall2024234.nc'
+[Errno 2] No such file or directory: b'/mnt/rivendell/archive/LargeData/Data/ERA5/daily/grndtemp/2024/grndtemp2024264.nc'

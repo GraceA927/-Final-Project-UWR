@@ -76,7 +76,7 @@ from idmtools.entities.simulation import Simulation
 # =============================================================================
 
 EXPERIMENTS = {
-    "XTLH_scenarios_IG2": "501cfc20-b86d-464d-9e98-8b2ae8736b03",  #                                  PUT-SCENARIO-EXPERIMENT-ID-HERE
+    "Pickup13yrs_Scenario_Final": "2a436f57-8a8c-43fe-94c8-e39974eb262a",  #                                  PUT-SCENARIO-EXPERIMENT-ID-HERE
 }
 STEP = "scenarios"
 OUT_SUFFIX = "_AnalyzerOutput"
@@ -90,7 +90,7 @@ REPORTING_INTERVAL_DAYS = 30
 MONTH_STARTS = np.array([0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334])
 
 # ---- Scenario design (MUST MATCH) -------------------------------------------
-BASELINE = "IRS_CONTINUE"
+BASELINE = "BAU"                   # business as usual (run script BAU_ARM_NAME)
 LOWER_BOUND = "NO_IRS"
 IRS_SWITCH_YEAR = 2027
 IG2_CAMPAIGN_YEARS = [2027, 2030]
@@ -142,12 +142,14 @@ TAG_ALIASES = {
     "scenario_kind": ["scenario_kind"],
     "ig2_coverage": ["ig2_coverage"],
     "ig2_kill_key": ["ig2_kill_key"],
+    "strategy": ["strategy"],
+    "cm_boost": ["cm_boost"],
 }
 SWEEP_VARIABLES = list(TAG_ALIASES)
 PAIR_FALLBACK = ["Run_Number", "x_Temporary_Larval_Habitat", "scale_constant",
                  "scale_temp_rain", "scale_water_veg"]
 SIM_KEYS = ["sim_id", "pair_id", "scenario", "scenario_kind", "ig2_coverage",
-            "ig2_kill_key", "Run_Number", "pickup_sim_index",
+            "ig2_kill_key", "strategy", "cm_boost", "Run_Number", "pickup_sim_index",
             "x_Temporary_Larval_Habitat", "scale_constant", "scale_temp_rain",
             "scale_water_veg"]
 
@@ -536,9 +538,11 @@ def add_pair_id(df):
 
 def load_table(path):
     df = pd.read_csv(path)
-    for c in ("scenario", "scenario_kind", "ig2_kill_key"):
+    for c in ("scenario", "scenario_kind", "ig2_kill_key", "strategy"):
         if c in df.columns:
             df[c] = df[c].fillna("").astype(str)
+    if "cm_boost" in df.columns:
+        df["cm_boost"] = pd.to_numeric(df["cm_boost"], errors="coerce").fillna(0.0)
     if "ig2_coverage" in df.columns:
         df["ig2_coverage"] = pd.to_numeric(df["ig2_coverage"], errors="coerce")
     return add_pair_id(df)
@@ -549,8 +553,8 @@ def sim_keys(df):
 
 
 def scenario_cols(df):
-    return [c for c in ("scenario", "scenario_kind", "ig2_coverage", "ig2_kill_key")
-            if c in df.columns]
+    return [c for c in ("scenario", "scenario_kind", "ig2_coverage", "ig2_kill_key",
+                        "strategy", "cm_boost") if c in df.columns]
 
 
 # =============================================================================
@@ -637,7 +641,8 @@ METRICS_U5 = ["U5_clinical_incidence_per_1000_py", "U5_pfpr"]
 # STAGE 2: PAIRED IMPACT
 # =============================================================================
 
-ARM_KEYS = ["scenario", "scenario_kind", "ig2_coverage", "ig2_kill_key"]
+ARM_KEYS = ["scenario", "scenario_kind", "ig2_coverage", "ig2_kill_key",
+            "strategy", "cm_boost"]
 
 
 def _reference_table(df, reference, value_cols, extra_keys=()):
@@ -659,6 +664,9 @@ def paired_impact(win, reference, metrics):
         return None
     arm = win[win["scenario"] != reference]
     m = arm.merge(ref, on="pair_id", how="inner")
+    for k in ARM_KEYS:              # older experiments lack strategy / cm_boost
+        if k not in m.columns:
+            m[k] = 0.0 if k == "cm_boost" else (m["scenario"] if k == "strategy" else "")
     if m.empty:
         print(f"WARNING: no arm could be paired with {reference}.")
         return None
@@ -705,6 +713,9 @@ def annual_paired_summary(annual, reference):
         return None
     arm = annual[annual["scenario"] != reference]
     m = arm.merge(ref, on=["pair_id", "Year"], how="inner")
+    for k in ARM_KEYS:
+        if k not in m.columns:
+            m[k] = 0.0 if k == "cm_boost" else (m["scenario"] if k == "strategy" else "")
     m["abs_diff"] = m[col] - m[f"{col}__ref"]
     m["rel_change"] = np.where(m[f"{col}__ref"] != 0,
                                m["abs_diff"] / m[f"{col}__ref"], np.nan)
@@ -912,6 +923,8 @@ def effective_use_table(coverages, factors):
 def coverage_response(summary, eff):
     s = summary[(summary["reference"] == BASELINE) & (summary["scenario_kind"] == "ig2")
                 & (summary["metric"] == PRIMARY_METRIC)].copy()
+    if "cm_boost" in s.columns:      # threshold is defined at current case management
+        s = s[s["cm_boost"].fillna(0.0) == 0.0]
     if s.empty:
         return None
     stat = "median_rel_change" if THRESHOLD_RULE == "median" else "q_upper_rule"

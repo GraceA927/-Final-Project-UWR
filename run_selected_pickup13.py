@@ -126,6 +126,7 @@ import manifest
 
 SITE_NAME = "UpperWest_Region"
 NODE_ID = 1
+
 MEMORY_LIMIT = 10000
 
 PROJECT_DIR = "/shared/home/grace/Final-Project-UWR"
@@ -156,11 +157,11 @@ ITN_AGE_FILE = "interventions_ITN_age.csv"
 ITN_SEASON_FILE = "interventions_ITN_season.csv"
 # -----------------------------------------------------------------------------
 
-EXPERIMENT_NAME = "Final_Pickup13yrs"
+EXPERIMENT_NAME = "Pickup13yrs_vector_behaviour"
 # Experiment name of the pickup (the login name is prefixed when submitting).
 
 # From the burn-in experiment. It must be a burn-in run with the habitat grid.
-BURNIN_EXPERIMENT_ID = "b1cd6a3f-c8cc-4267-9416-2422512ae6d4"# f14d01bc-f7fe-4df0-b9b1-9f13ad9be772
+BURNIN_EXPERIMENT_ID = ""### 
 BURNIN_FILTER = {}
 
 # These values are inherited directly from each burn-in simulation.
@@ -172,10 +173,7 @@ WRITE_PICKUP_STATE = True
 # Microscopy-like parasite detection threshold.
 PARASITE_DETECTION_THRESHOLD = 40
 
-
-# =============================================================================
 # DEMOGRAPHIC SETTINGS
-# =============================================================================
 
 BIRTH_RATE_DEPENDENCE = "INDIVIDUAL_PREGNANCIES"
 
@@ -205,30 +203,25 @@ STALE_CONFIG_PARAMS = ("Disable_IP_Whitelist",)
 APPLY_VECTOR_BEHAVIOUR = True
 
 
-# =============================================================================
 # HABITAT SWEEP
-# =============================================================================
 # The pickup does NOT sweep these. Each simulation inherits its own values
 # from the matching burn-in simulation's tags. They are listed here so they
 # can be seen, and check_burnin_grid() confirms the burn-in used them.
 
-#SCALE_CONSTANT = [1.0]
-#SCALE_TEMP_RAIN = [0.5, 1.0, 2.5, 5.0]
-#SCALE_WATER_VEG = [0.0, 0.1, 0.5]
-#XTLH_RANGE = [70.0, 75.0, 80.0, 85.0, 90.0]
-#XTLH_RANGE = [90.0]
 
+
+##  PARAMETER SPACE
 SCALE_CONSTANT = [1.0]
-SCALE_TEMP_RAIN = [0.5]
-SCALE_WATER_VEG = [0.0]
+SCALE_TEMP_RAIN = [0.5, 1.0, 2.5]
+# Retain all current water/vegetation values
+SCALE_WATER_VEG = [0.0, 0.1, 0.5]
+ 
+#XTLH_RANGE = list(np.linspace(40, 80, 5))    # 4.5, 9.0, 17.8, 35.5, 70.8
+XTLH_RANGE = list(np.linspace(2, 30, 5))
 
-XTLH_RANGE = [70.0]
 
 
-#XTLH_RANGE = list(np.round(np.arange(75.0, 91.0, 2.5), 3)) 
-#XTLH_RANGE = list(np.round(np.linspace(60.0, 80.0, 9), 3))
-
-NUM_SEEDS = 30  # must equal NUM_SEEDS burnin
+NUM_SEEDS = 5  # must equal NUM_SEEDS burnin
 
 habitat_df = pd.DataFrame(
     list(product(SCALE_CONSTANT, SCALE_TEMP_RAIN, SCALE_WATER_VEG)),

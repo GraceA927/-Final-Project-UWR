@@ -1,0 +1,8 @@
+node_id,phase,year,month,start_day,coverage,insecticide,killing_initial_effect,killing_box_duration,killing_decay_time_constant,repelling_initial_effect,repelling_box_duration,repelling_decay_time_constant,repetitions,timesteps_between_repetitions
+1,pickup,2026,April,94,0.202,Clothianidin,1.0,0,180,0.0,0,90,1,365
+1,pickup,2027,April,94,0.0,Clothianidin,1.0,0,180,0.0,0,90,1,365
+1,pickup,2028,April,94,0.2,Clothianidin,1.0,0,180,0.0,0,90,1,365
+1,pickup,2029,April,94,0.2,Clothianidin,1.0,0,180,0.0,0,90,1,365
+1,pickup,2030,April,94,0.2,Clothianidin,1.0,0,180,0.0,0,90,1,365
+1,pickup,2031,April,94,0.2,Clothianidin,1.0,0,180,0.0,0,90,1,365
+1,pickup,2032,April,94,0.2,Clothianidin,1.0,0,180,0.0,0,90,1,365

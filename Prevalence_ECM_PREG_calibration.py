@@ -75,7 +75,7 @@ try:
 except (ImportError, AttributeError):
     JOB_DIR = os.path.join(PROJECT_DIR, "experiments")
 
-EXPERIMENT_NAME = "UWR_Pickup_VectorXLHT"
+EXPERIMENT_NAME = "Final_Pickup13yrs_editted"
 ANALYZER_DIR = os.path.join(JOB_DIR, f"{EXPERIMENT_NAME}_AnalyzerOutput")
 
 SIM_PFPR_CSV = os.path.join(ANALYZER_DIR, "PfPR_ClinicalIncidence_monthly_pickup.csv")

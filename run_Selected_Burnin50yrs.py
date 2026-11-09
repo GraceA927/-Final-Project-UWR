@@ -156,7 +156,7 @@ VECTOR_FILE = "vector.csv"
 DEMOGRAPHICS_FILE = "demographics.csv"
 CASE_MANAGEMENT_FILE = "intervention_CMBN.csv"
 
-EXPERIMENT_NAME = "Final_Burnin50yrs"
+EXPERIMENT_NAME = "Burnin50yrs_vector_behaviour"
 
 
 ################################################################################
@@ -218,7 +218,7 @@ DAYS_PER_YEAR = 365
 BURNIN_DAYS = BURNIN_YEARS * DAYS_PER_YEAR               # 18,250
 
 SIM_START_TIME = 0
-NUM_SEEDS = 30
+NUM_SEEDS = 5
 
 
 # REPORT SETTINGS
@@ -261,21 +261,18 @@ EVENT_MAX_AGE_YEARS = 45
 EXPECTED_CLIMATE_DAYS = BURNIN_DAYS
 EXPECTED_ORIGINAL_YEARS = f"{BURNIN_START_YEAR}-{BURNIN_END_YEAR}"
 
-## CALIBRATION PARAMETER SPACE
+##  PARAMETER SPACE
 
 
+##  PARAMETER SPACE
 SCALE_CONSTANT = [1.0]
-SCALE_TEMP_RAIN = [0.5]
-SCALE_WATER_VEG = [0.0]
+SCALE_TEMP_RAIN = [0.5, 1.0, 2.5]
+# Retain all current water/vegetation values
+SCALE_WATER_VEG = [0.0, 0.1, 0.5] #Fixed water and vegetation scaling
 
-XTLH_RANGE = [70.0]
-
-#XTLH_RANGE = [70.0, 75.0, 80.0, 85.0, 90.0]
-#XTLH_RANGE = list(np.round(np.arange(75.0, 91.0, 2.5), 3)) 
-
-#XTLH_RANGE = list(np.round(np.linspace(60.0, 80.0, 9), 3))
-
-
+#XTLH_RANGE = list(np.logspace(0.65, 1.85, 10))   # 4.5, 9.0, 17.8, 35.5, 70.8
+#XTLH_RANGE = list(np.linspace(2, 20, 5)) 
+XTLH_RANGE = list(np.linspace(2, 30, 5))
 
 habitat_df = pd.DataFrame(
     list(product(SCALE_CONSTANT, SCALE_TEMP_RAIN, SCALE_WATER_VEG)),

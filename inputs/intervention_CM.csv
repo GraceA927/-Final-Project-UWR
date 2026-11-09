@@ -51,3 +51,5 @@ node_id,phase,start_day,duration,trigger,age_min,age_max,coverage,seek,rate,drug
 1,pickup,4381,365,NewClinicalCase,5,15,0.64,1,0.3,AL,2025
 1,pickup,4381,365,NewClinicalCase,15,115,0.67,1,0.3,AL,2025
 1,pickup,4381,365,NewSevereCase,0,115,0.60,1,0.2,AL,2025
+
+

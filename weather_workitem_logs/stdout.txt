@@ -1,0 +1,46 @@
+INFO     Step 0: Starting file generation at 2026-11-06 05:02:48.402103.
+INFO     Starting processing with the following input arguments:
+INFO     POINTS_PATH     : /mnt/idm2/home/jgerardin/workitems/9ef/ad7/56e/9efad756-e2d9-f111-92f3-000d3af5294c/demographics.csv
+INFO     POINTS_COLUMNS  : ['(default)', '(default)', 'node_id']
+INFO     COLUMNS_CASE    : (default)
+INFO     START_DATE      : 2013-01-01 00:00:00
+INFO     END_DATE        : 2025-12-31 00:00:00
+INFO     RESOLUTION      : (900 arc seconds, 0.25 degrees, 30 km)
+INFO     DATA_SOURCE_NAME: ERA5
+INFO     DATA_SOURCE_DIR : /mnt/rivendell/archive/LargeData/Data/ERA5/daily
+INFO     PARALLEL_OFF    : (default)
+INFO     PARALLEL_COUNT  : (default)
+INFO     DRY_RUN         : (default)
+INFO     LOG_DIR         : /tmp/app/log
+INFO     DEBUG           : (default)
+INFO     VARIABLES       : ['airtemp', 'humid', 'rainfall', 'grndtemp']
+INFO     PLACE           : (default)
+INFO     LABEL           : (default)
+INFO     ID_REFERENCE    : upper_west
+INFO     OUT_DIR         : /mnt/idm2/home/jgerardin/workitems/9ef/ad7/56e/9efad756-e2d9-f111-92f3-000d3af5294c/out
+INFO     OUTPUT_TYPE     : dtkfile
+INFO     
+INFO     Step 1: Reading the list of input nodes.
+INFO     Elapsed 00:00.004138, Read 1 nodes.
+INFO     
+INFO     Step 2: Preparing the list of ERA5 input paths.
+INFO     Elapsed 00:00.099654, Prepared the list of 18992 ERA5 input paths for 4 variables.
+INFO     
+INFO     Step 3: Reading Data Dimensions
+INFO     Elapsed 00:00.724545, Read variables dimensions for 4 variables.
+INFO     
+INFO     Step 4: Mapping nodes to spatial tiles.
+INFO     Elapsed 00:00.000356, Mapped 1 nodes to 1 tiles.
+INFO     
+INFO     Step 5: Reading weather time series, 1 data points from each of 18992 ERA5 input paths.
+INFO     Elapsed 05:42.252103, Failed to read weather time series for all weather variables.
+INFO     
+INFO     Output file type = dtkfile
+INFO     Step 6: Saving weather files.
+INFO     Elapsed 00:00.000272, Saved DTK weather files for 4 variables.
+INFO     
+INFO     Finished generating DTK weather files in 0:05:43.085532.
+ERROR    [Errno 2] No such file or directory: b'/mnt/rivendell/archive/LargeData/Data/ERA5/daily/airtemp/2024/airtemp2024159.nc'
+ERROR    [Errno 2] No such file or directory: b'/mnt/rivendell/archive/LargeData/Data/ERA5/daily/humid/2024/humid2024179.nc'
+ERROR    [Errno 2] No such file or directory: b'/mnt/rivendell/archive/LargeData/Data/ERA5/daily/rainfall/2024/rainfall2024234.nc'
+ERROR    [Errno 2] No such file or directory: b'/mnt/rivendell/archive/LargeData/Data/ERA5/daily/grndtemp/2024/grndtemp2024264.nc'

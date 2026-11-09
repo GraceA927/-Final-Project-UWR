@@ -45,13 +45,13 @@ DAYS_PER_YEAR = 365
 PICKUP_DURATION_DAYS = (PICKUP_END_YEAR - PICKUP_START_YEAR + 1) * DAYS_PER_YEAR
 REPORTING_INTERVAL_DAYS = 30
 STEP = "pickup"
-OUT_SUFFIX = "_AnalyzerOutput"
+OUT_SUFFIX = "_Output"
 
 # Flat 365-day EMOD calendar: cumulative starts for Jan–Dec.
 MONTH_STARTS = np.array([0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334])
 
 EXPERIMENTS = {
-    "Final_Pickup13yrs": "15e29eea-2371-4237-adee-a854d627d137",#dbc7b76c-e8b6-4dae-b540-b23f19c9f954
+    "Pickup13yrs_vector_behaviour": "72d17b00-4fc3-4fa5-acd3-22d9b2a84801", #e85ed97a-4c51-4adc-a003-1cdad8094136####92cd882b-2128-44c2-93c9-6f470f5fc00e #edit to pickup ID
 }
 
 TAG_ALIASES = {

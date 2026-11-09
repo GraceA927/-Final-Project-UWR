@@ -1,0 +1,1 @@
+{"WorkItem_Type": "DockerWorker", "Execution": {"ImageName": "idm-docker-production.packages.idmod.org/dse/weather-files", "Command": "python /app/generate_weather_asset_collection.py demographics.csv 20130101 20251231 --ds ERA5 --id-ref upper_west --node-col node_id --create-asset"}}

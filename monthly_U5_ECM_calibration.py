@@ -11,8 +11,10 @@ Simulated data
     (Run_Number) before any correlation is computed.
 
 Observed data
-    inputs/monthly_u5_cases.csv: Year, Month (text, "January"...), Age_Group,
-    Malaria_Cases. Months are converted to integers; years start in 2015.
+    inputs/monthly_U5_conf.csv: Region, year, month (text, "January"...),
+    conf_u5 (confirmed U5 cases), adj1_conf_u5, Pop_5,
+    observed_incidence_per_1000. conf_u5 is used as the observed case count.
+    Months are converted to integers; years 2015-2025.
 
 Two analyses
     1. Single year (CALIBRATION_YEAR): correlate the 12-month profile; plot top 6.
@@ -47,7 +49,7 @@ INPUT_DIR = os.path.join(PROJECT_DIR, "inputs")
 # Analyzer output folder: <job_directory>/<experiment>_output/
 ANALYZER_DIR = os.path.join(PROJECT_DIR, "experiments", "Selected_pickup13yr_AnalyzerOutput")
 PFPR_CSV = os.path.join(ANALYZER_DIR, "PfPR_ClinicalIncidence_monthly_pickup.csv")
-OBSERVED_CASES_PATH = os.path.join(INPUT_DIR, "monthly_u5_cases.csv")
+OBSERVED_CASES_PATH = os.path.join(INPUT_DIR, "monthly_U5_conf.csv")
 OUTPUT_DIR = ANALYZER_DIR
 
 # -----------------------------------------------------------------------------
@@ -105,20 +107,20 @@ def load_u5_cases(csv_path):
     return u5.rename(columns={"Year": "year"})
 
 
-def load_observed_cases(csv_path, age_group="U5"):
-    """Observed monthly cases with integer 'year' and 'month' and a 'Cases' column."""
+def load_observed_cases(csv_path, region="Upper West", case_col="conf_u5"):
+    """Observed monthly U5 cases with integer 'year' and 'month' and a 'Cases' column."""
     df = pd.read_csv(csv_path)
-    df = df[df["Age_Group"] == age_group].copy()
+    df = df[df["Region"] == region].copy()
     if df.empty:
-        raise ValueError(f"No rows with Age_Group == '{age_group}' in {csv_path}.")
+        raise ValueError(f"No rows with Region == '{region}' in {csv_path}.")
 
-    unmapped = sorted(set(df["Month"]) - set(MONTH_NAME_TO_NUMBER))
+    unmapped = sorted(set(df["month"]) - set(MONTH_NAME_TO_NUMBER))
     if unmapped:
         raise ValueError(f"{csv_path}: unrecognised month name(s) {unmapped}.")
 
-    df["month"] = df["Month"].map(MONTH_NAME_TO_NUMBER)
-    df["year"] = df["Year"].astype(int)
-    df["Cases"] = df["Malaria_Cases"].astype(float)
+    df["month"] = df["month"].map(MONTH_NAME_TO_NUMBER)
+    df["year"] = df["year"].astype(int)
+    df["Cases"] = df[case_col].astype(float)
     return df[["year", "month", "Cases"]].reset_index(drop=True)
 
 
