@@ -16,8 +16,8 @@ Usage
 
        python run_scenarios_UWR.py --dry-run
 
-2. Submit ONE pickup state x ALL scenarios (9 simulations with the defaults:
-   2 IRS coverage arms + 7 IG2 arms):
+2. Submit ONE pickup state x ALL scenarios (5 simulations with the defaults:
+   BAU + NO_IRS + 3 IG2 arms):
 
        python run_scenarios_UWR.py --test-one
 
@@ -30,14 +30,12 @@ Scenarios (same weather, same states, same seeds)
   2026 (common path): every arm runs IRS as in 2025 (the REFERENCE_YEAR rows
                  are repeated unless the IRS CSV has its own 2026 rows).
   From 1 Jan IRS_SWITCH_YEAR (2027) the arms diverge:
-  IRS_<c>        IRS continues at TOTAL annual coverage c (IRS_COVERAGES,
-                 default 0.95 and 1.00); product settings come from the IRS
-                 CSV rows, only the coverage is replaced. No IG2 nets.
-  IG2_<c>_<key>  IRS removed; IG2 nets distributed at coverage c (0.5 ... 1.0),
-                 issued on IG2_CAMPAIGN_YEARS (2027, then every 3 years)
-  IRS_CONTINUE   optional reference (IRS at the CSV coverage). OFF by default
-                 (INCLUDE_IRS_BASELINE_ARM).
-  NO_IRS         optional lower bound: no IRS and no IG2. OFF by default
+  BAU            business as usual: IRS continues exactly as in the IRS CSV
+                 (coverage and product settings from the CSV rows). No IG2.
+  IG2_<c>_<key>  IRS removed; IG2 nets distributed at coverage c
+                 (IG2_COVERAGES), issued on IG2_CAMPAIGN_YEARS (2027, then
+                 every 3 years)
+  NO_IRS         optional lower bound: no IRS and no IG2
                  (INCLUDE_NO_IRS_ARM).
   Because 2026 is identical, the arms should give the same 2026 results; a
   difference before 1 Jan 2027 means something in the setup is not paired.
@@ -174,9 +172,19 @@ MEMORY_LIMIT = 10000
 PROJECT_DIR = "/shared/home/grace/Final-Project-UWR"
 INPUT_DIR = os.path.join(PROJECT_DIR, "inputs")
 
-# Weather for the projection (day 1 = 1 Jan PROJECTION_START_YEAR).
-CLIMATE_ROOT = os.path.join(PROJECT_DIR, "climate", "projection")
-CLIMATE_SUBDIR = ""
+# Weather for the projection: the SAME files the pickup used (Site_Setup_Final.py,
+# CLIMATE_PERIODS["pickup"]: 2013-2023 real, leap days dropped, mean air T shifted to
+# 29.33 C, 2024-2025 filled). The file starts on 1 Jan 2013 and holds 4745 days, so
+# projection day 1 (1 Jan PROJECTION_START_YEAR) reads 2013 weather, day 366 reads 2014,
+# and so on. Every arm uses identical weather.
+CLIMATE_ROOT = os.path.join(INPUT_DIR, "upper_west", "climate")
+CLIMATE_SUBDIR = os.path.join("2013001-2023365", "_noleap_meanT29.33_fill2025")
+CLIMATE_FILENAMES = {                       # must match Site_Setup_Final.climate_filenames()
+    "air": "dtk_15arcmin_air_temperature_daily_revised.bin",
+    "land": "dtk_15arcmin_land_temperature_daily_revised.bin",
+    "rain": "dtk_15arcmin_rainfall_daily_revised.bin",
+    "hum": "dtk_15arcmin_relative_humidity_daily_revised.bin",
+}
 
 VECTOR_FILE = "vector.csv"
 DEMOGRAPHICS_FILE = "demographics.csv"
@@ -195,10 +203,10 @@ USE_ITN_USAGE_CURVES = True
 ITN_AGE_FILE = "interventions_ITN_age.csv"
 ITN_SEASON_FILE = "interventions_ITN_season.csv"
 
-EXPERIMENT_NAME = "operational_effectiveness_use"
+EXPERIMENT_NAME = "UWR_BAU_vs_IG2_netuse_retention"   # previous runs: UWR_BAU_vs_IG2_netuse (full, none), UWR_BAU_vs_IG2 (full only), UWR_BAU_vs_IG2_usage (age/season variants)
 
 # Finished PICKUP experiment (it wrote state-04745.dtk).
-PICKUP_EXPERIMENT_ID = "15e29eea-2371-4237-adee-a854d627d137"
+PICKUP_EXPERIMENT_ID = "cfb6ec66-89e9-46bf-9bd6-2d72a9d2777d"   # re-run 2026-11-16 (original f514d02d folder was deleted)
 PICKUP_FILTER = {}
 
 # After calibration: CSV of the parameter sets to carry forward, with columns
@@ -209,7 +217,7 @@ PARAMETER_SET_FILE = None
 HABITAT_TAGS = ["scale_constant", "scale_temp_rain", "scale_water_veg"]
 
 WRITE_END_STATE = False           # serialize at the end of the projection
-PARASITE_DETECTION_THRESHOLD = 40
+PARASITE_DETECTION_THRESHOLD = 20
 
 
 # =============================================================================
@@ -244,16 +252,12 @@ IG2_COVERAGES = [0.60, 0.80,0.90]
 # Add e.g. [0.35, 0.45, 0.55, 0.65, 0.75, 0.85] to pin down the threshold.
 EXTRA_IG2_COVERAGES = []
 
-# IRS continuation at a fixed TOTAL annual coverage from IRS_SWITCH_YEAR on.
-# Product settings (Clothianidin, kill decay 180 d, 1 round on 4 April) come
-# from the IRS CSV rows; only the coverage is replaced. No IG2 nets in these
-# arms. IRS coverage (share of eligible structures sprayed) and IG2 coverage
-# (share of the population receiving a net) are comparable scenario levels,
-# NOT equivalent measures of intervention coverage.
-IRS_COVERAGES = [0.60, 0.80,0.90]
+# Business-as-usual arm (always run): IRS continues at the coverage and
+# product settings in the IRS CSV, no IG2 nets. The analyzers look for this
+# name (BAU_ARM in analyze_scenarios_UWR.py / analyzer_scenarios_EFFIG2_plot.py).
+BAU_ARM_NAME = "BAU"
 
-# Optional reference arms, OFF for this run (set True to add them back).
-INCLUDE_IRS_BASELINE_ARM = False   # IRS_CONTINUE: IRS at the CSV coverage
+# Optional lower-bound arm.
 INCLUDE_NO_IRS_ARM = True         # NO_IRS: lower bound, no IRS and no IG2
 
 # IG2 parameters from the study. discard_k / discard_l and IG2_CAMPAIGN_DOY
@@ -274,7 +278,7 @@ IG2_KILL_RUN = ["cfp"]
 # COMMON PATH: until IRS_SWITCH_YEAR every arm (including the IG2 arms) runs
 # IRS exactly as in the reference year (2026 repeats 2025 unless the IRS CSV
 # has its own 2026 rows). From 1 Jan IRS_SWITCH_YEAR the arms diverge:
-# IRS_<c> arms keep IRS at coverage c, IG2 arms replace IRS with IG2
+# the BAU arm keeps IRS as in the CSV, IG2 arms replace IRS with IG2
 # (and the optional NO_IRS arm drops IRS).
 IRS_SWITCH_YEAR = 2027
 
@@ -287,7 +291,29 @@ IG2_CAMPAIGN_DOY = 91         # day of year of the distribution (91 = 1 Apr)
 # effective use = c x retention x age multiplier x season multiplier.
 # False: usage multiplier = 1, so effective use at distribution = c.
 # Independent of USE_ITN_USAGE_CURVES (which only concerns routine ANC/CWC nets).
-IG2_USE_CURVES = False
+IG2_USE_CURVES = True
+
+# Net-use assumptions: every IG2 coverage is run once per assumption listed in
+# IG2_USAGE_RUN. Scenario names end in the assumption (IG2_60_cfp_full,
+# IG2_60_cfp_no_age_season), which analyzer_scenarios_EFFIG2_plot.py reads.
+#   full  WITH the assumptions: MASS age usage, seasonal usage and net retention
+#         (Weibull discard), so effective use < distribution coverage.
+#   no_age_season  WITHOUT the use assumptions: everyone who still has a net
+#         uses it all year (no age or seasonal usage), but nets are still lost
+#         (Weibull discard), so effective use = coverage x net retention.
+#   none  no assumptions at all: nets also never lost (use = coverage always).
+# The other modes switch off one assumption at a time (not run by default).
+IG2_USAGE_MODES = {
+    "full": dict(age=True, season=True, retention=True),
+    "none": dict(age=False, season=False, retention=False),
+    "no_age": dict(age=False, season=True, retention=True),
+    "no_season": dict(age=True, season=False, retention=True),
+    "no_retention": dict(age=True, season=True, retention=False),
+    "no_age_season": dict(age=False, season=False, retention=True),
+}
+IG2_USAGE_RUN = ["full", "no_age_season", "none"]   # WITH, WITHOUT (use = coverage + retention), no net loss
+if not IG2_USE_CURVES:
+    IG2_USAGE_RUN = ["no_age_season"]
 
 # Count net-use events per day (all nets). Diagnostic only: each net is counted
 # separately, so this overstates the share of people using a net.
@@ -1070,12 +1096,13 @@ def itn_usage_kwargs(channel, year, delivery_day):
                 seasonal_dependence=usage_season_curve(channel, year, doy_of_day(delivery_day)))
 
 
-def ig2_usage_kwargs(year, delivery_day):
-    """Usage curves of IG2 (MASS channel), switched by IG2_USE_CURVES only."""
-    if not IG2_USE_CURVES:
-        return dict(age_dependence=None, seasonal_dependence=None)
-    return dict(age_dependence=usage_age_curve("MASS", year),
-                seasonal_dependence=usage_season_curve("MASS", year, doy_of_day(delivery_day)))
+def ig2_usage_kwargs(year, delivery_day, usage="full"):
+    """Usage curves of IG2 (MASS channel) for one usage assumption (IG2_USAGE_MODES)."""
+    mode = IG2_USAGE_MODES[usage]
+    return dict(
+        age_dependence=usage_age_curve("MASS", year) if mode["age"] else None,
+        seasonal_dependence=(usage_season_curve("MASS", year, doy_of_day(delivery_day))
+                             if mode["season"] else None))
 
 
 def validate_itn_usage(sched):
@@ -1169,24 +1196,15 @@ def _read_site_definition():
 # CLIMATE
 # =============================================================================
 
-CLIMATE_VARS = ["air_temperature", "land_temperature", "rainfall", "relative_humidity"]
-CLIMATE_FILES = [f"{v}.bin{ext}" for v in CLIMATE_VARS for ext in ("", ".json")]
+CLIMATE_FILES = [f"{n}{ext}" for n in CLIMATE_FILENAMES.values() for ext in ("", ".json")]
 
 
 def resolve_climate_dir():
-    if CLIMATE_SUBDIR:
-        return os.path.join(CLIMATE_ROOT, CLIMATE_SUBDIR)
-    if os.path.isfile(os.path.join(CLIMATE_ROOT, "air_temperature.bin")):
-        return CLIMATE_ROOT
-    if not os.path.isdir(CLIMATE_ROOT):
-        raise FileNotFoundError(f"Projection climate folder does not exist:\n{CLIMATE_ROOT}")
-    found = [d for d in sorted(os.listdir(CLIMATE_ROOT))
-             if os.path.isfile(os.path.join(CLIMATE_ROOT, d, "air_temperature.bin"))]
-    if len(found) == 1:
-        return os.path.join(CLIMATE_ROOT, found[0])
-    if not found:
-        raise FileNotFoundError(f"No air_temperature.bin in {CLIMATE_ROOT} or its subfolders.")
-    raise ValueError(f"Several weather folders in {CLIMATE_ROOT}: {found}. Set CLIMATE_SUBDIR.")
+    climate_dir = os.path.join(CLIMATE_ROOT, CLIMATE_SUBDIR) if CLIMATE_SUBDIR else CLIMATE_ROOT
+    if not os.path.isdir(climate_dir):
+        raise FileNotFoundError(f"Projection climate folder does not exist:\n{climate_dir}\n"
+                                f"Run Site_Setup_Final.py --step setup_climate first.")
+    return climate_dir
 
 
 def validate_climate(climate_dir):
@@ -1195,15 +1213,15 @@ def validate_climate(climate_dir):
         if not os.path.isfile(path):
             raise FileNotFoundError(f"Missing climate file:\n{path}")
 
-    for var in CLIMATE_VARS:
-        with open(os.path.join(climate_dir, f"{var}.bin.json")) as f:
+    for name in CLIMATE_FILENAMES.values():
+        with open(os.path.join(climate_dir, f"{name}.json")) as f:
             meta = json.load(f).get("Metadata", {})
         count = meta.get("DatavalueCount")
         if count is not None and int(count) < PROJ_DAYS:
-            raise ValueError(f"{var}: weather has {count} days but the projection "
+            raise ValueError(f"{name}: weather has {count} days but the projection "
                              f"needs {PROJ_DAYS}; EMOD would wrap to the start of the file.")
-    print(f"Climate: {climate_dir}  (day 1 must be 1 Jan {PROJ_START}; "
-          f"the SAME weather is used in every arm)")
+    print(f"Climate: {climate_dir}\n  (pickup weather from Site_Setup_Final.py; projection "
+          f"day 1 = 1 Jan {PROJ_START} reads 1 Jan 2013 weather; SAME weather in every arm)")
 
 
 # =============================================================================
@@ -1253,10 +1271,10 @@ def set_param_fn(config):
     config.parameters.Simulation_Duration = PROJ_DAYS
 
     config.parameters.Climate_Model = "CLIMATE_BY_DATA"
-    config.parameters.Air_Temperature_Filename = os.path.join("climate", "air_temperature.bin")
-    config.parameters.Land_Temperature_Filename = os.path.join("climate", "land_temperature.bin")
-    config.parameters.Rainfall_Filename = os.path.join("climate", "rainfall.bin")
-    config.parameters.Relative_Humidity_Filename = os.path.join("climate", "relative_humidity.bin")
+    config.parameters.Air_Temperature_Filename = os.path.join("climate", CLIMATE_FILENAMES["air"])
+    config.parameters.Land_Temperature_Filename = os.path.join("climate", CLIMATE_FILENAMES["land"])
+    config.parameters.Rainfall_Filename = os.path.join("climate", CLIMATE_FILENAMES["rain"])
+    config.parameters.Relative_Humidity_Filename = os.path.join("climate", CLIMATE_FILENAMES["hum"])
 
     config.parameters.Enable_Default_Reporting = 1   # InsetChart (daily population)
 
@@ -1475,7 +1493,11 @@ def weibull_discard_config(r):
             "Expiration_Period_Lambda": float(r.discard_l)}
 
 
-def ig2_discard_config():
+def ig2_discard_config(usage="full"):
+    if not IG2_USAGE_MODES[usage]["retention"]:
+        # No net loss: every net is kept far beyond the end of the projection.
+        return {"Expiration_Period_Distribution": "CONSTANT_DISTRIBUTION",
+                "Expiration_Period_Constant": float(100 * DAYS_PER_YEAR)}
     return {"Expiration_Period_Distribution": "WEIBULL_DISTRIBUTION",
             "Expiration_Period_Kappa": float(IG2["discard_k"]),
             "Expiration_Period_Lambda": float(IG2["discard_l"])}
@@ -1736,6 +1758,11 @@ def add_cwc_catchup(campaign, df):
 def add_irs(campaign, df):
     from emodpy_malaria.interventions.irs import add_scheduled_irs_housing_modification
 
+    def box_or_default(box, decay):
+        # Same rule as Site_Setup_Final._waning(): box 0 AND decay 0 -> 3650-day box
+        # (emod_api cannot build a waning with both 0; with initial 0 it has no effect).
+        return 3650 if int(box) <= 0 and float(decay) <= 0 else int(box)
+
     if not has_rows(df):
         return
     for r in df.itertuples():
@@ -1747,28 +1774,13 @@ def add_irs(campaign, df):
             repetitions=int(r.reps),
             timesteps_between_repetitions=int(r.rep_gap),
             killing_initial_effect=float(r.killing_initial),
-            killing_box_duration=int(r.killing_box),
+            killing_box_duration=box_or_default(r.killing_box, r.killing_decay),
             killing_decay_time_constant=float(r.killing_decay),
             repelling_initial_effect=float(r.repelling_initial),
-            repelling_box_duration=int(r.repelling_box),
+            repelling_box_duration=box_or_default(r.repelling_box, r.repelling_decay),
             repelling_decay_time_constant=float(r.repelling_decay),
             insecticide="",
         )
-
-
-def rescale_irs_coverage(df, target):
-    """
-    Set the TOTAL IRS coverage of every year to `target`, keeping the CSV's
-    split between rows (products / rounds). Years whose CSV total is 0 stay 0.
-    target=None returns the rows unchanged (CSV coverage).
-    """
-    if not has_rows(df) or target is None:
-        return df
-    df = df.copy()
-    total = df.groupby("year")["cov"].transform("sum")
-    factor = np.where(total > 0, float(target) / total, 0.0)
-    df["cov"] = (df["cov"] * factor).clip(0.0, 1.0)
-    return df
 
 
 def ig2_campaign_days():
@@ -1782,7 +1794,7 @@ def ig2_campaign_days():
     return days
 
 
-def add_ig2(campaign, coverage, kill_decay):
+def add_ig2(campaign, coverage, kill_decay, usage="full"):
     """
     Scheduled IG2 mass distribution at demographic coverage `coverage` (= c).
     The same coverage is used at every re-issue. With IG2_USE_CURVES the nets
@@ -1806,10 +1818,10 @@ def add_ig2(campaign, coverage, kill_decay):
             blocking_decay_time_constant=float(IG2["blocking_decay"]),
             killing_initial_effect=float(IG2["killing_initial"]),
             killing_decay_time_constant=float(kill_decay),
-            discard_config=ig2_discard_config(),
+            discard_config=ig2_discard_config(usage),
             broadcast_event="Received_ITN_IG2",
         )
-        kwargs.update(ig2_usage_kwargs(year, day))
+        kwargs.update(ig2_usage_kwargs(year, day, usage))
 
         call_supported(add_scheduled_usage_dependent_bednet, campaign, "IG2", **kwargs)
 
@@ -1959,35 +1971,28 @@ def scenario_label(c):
 def build_scenarios():
     scenarios = []
 
-    # Optional reference arms (off by default).
-    if INCLUDE_IRS_BASELINE_ARM:
-        scenarios.append(dict(name="IRS_CONTINUE", kind="irs", coverage=0.0,
-                              irs_coverage=None, kill_key=""))
+    # Business as usual: IRS at the CSV coverage, no IG2 nets.
+    scenarios.append(dict(name=BAU_ARM_NAME, kind="irs", coverage=0.0, kill_key=""))
 
     if INCLUDE_NO_IRS_ARM:
-        scenarios.append(dict(name="NO_IRS", kind="none", coverage=0.0,
-                              irs_coverage=None, kill_key=""))
-
-    # IRS continuation at a fixed total annual coverage, no IG2 nets.
-    for c in sorted({round(float(c), 4) for c in IRS_COVERAGES}):
-        if not 0 < c <= 1:
-            raise ValueError(f"IRS coverage {c} must be in (0, 1].")
-        scenarios.append(dict(name=f"IRS_{scenario_label(c)}", kind="irs",
-                              coverage=0.0, irs_coverage=c, kill_key=""))
+        scenarios.append(dict(name="NO_IRS", kind="none", coverage=0.0, kill_key=""))
 
     # IG2 replacement arms (IRS removed from IRS_SWITCH_YEAR).
     coverages = sorted({round(float(c), 4) for c in IG2_COVERAGES + EXTRA_IG2_COVERAGES})
     for key in IG2_KILL_RUN:
         if key not in IG2_KILL_DECAY:
             raise ValueError(f"IG2_KILL_RUN key '{key}' not in IG2_KILL_DECAY.")
-        for c in coverages:
-            if not 0 < c <= 1:
-                raise ValueError(f"IG2 coverage {c} must be in (0, 1].")
-            scenarios.append(dict(name=f"IG2_{scenario_label(c)}_{key}", kind="ig2",
-                                  coverage=c, irs_coverage=None, kill_key=key))
+        for usage in IG2_USAGE_RUN:
+            if usage not in IG2_USAGE_MODES:
+                raise ValueError(f"IG2_USAGE_RUN entry '{usage}' not in IG2_USAGE_MODES.")
+            for c in coverages:
+                if not 0 < c <= 1:
+                    raise ValueError(f"IG2 coverage {c} must be in (0, 1].")
+                scenarios.append(dict(name=f"IG2_{scenario_label(c)}_{key}_{usage}",
+                                      kind="ig2", coverage=c, kill_key=key, usage=usage))
 
     if not scenarios:
-        raise ValueError("No scenarios selected: check IRS_COVERAGES, IG2_COVERAGES "
+        raise ValueError("No scenarios selected: check IG2_COVERAGES "
                          "and the INCLUDE_* flags.")
     names = [s["name"] for s in scenarios]
     if len(names) != len(set(names)):
@@ -1999,19 +2004,17 @@ def describe_scenarios(scenarios):
     print("\nScenarios (identical weather, states, seeds and other programmes):")
     for s in scenarios:
         if s["kind"] == "irs":
-            if s.get("irs_coverage") is None:
-                what = (f"IRS continues after {IRS_SWITCH_YEAR} at the CSV coverage "
-                        f"({REFERENCE_YEAR} rows repeated if the CSV has no projection rows)")
-            else:
-                what = (f"IRS continues after {IRS_SWITCH_YEAR} at total annual coverage "
-                        f"{s['irs_coverage']:.2f}; no IG2 nets")
+            what = (f"business as usual: IRS continues after {IRS_SWITCH_YEAR} at the "
+                    f"CSV coverage ({REFERENCE_YEAR} rows repeated if the CSV has no "
+                    f"projection rows); no IG2 nets")
         elif s["kind"] == "none":
             what = f"no IRS and no IG2 from 1 Jan {IRS_SWITCH_YEAR} (lower bound)"
         else:
             what = (f"IRS removed from 1 Jan {IRS_SWITCH_YEAR}; IG2 distributed at coverage "
                     f"{s['coverage']:.2f} on "
                     f"{', '.join(fmt_day(d) for d in ig2_campaign_days())}; "
-                    f"kill decay {IG2_KILL_DECAY[s['kill_key']]:g} d")
+                    f"kill decay {IG2_KILL_DECAY[s['kill_key']]:g} d; "
+                    f"net use: {s['usage']}")
         print(f"  {s['name']:<16} {what}")
 
     print("\n  NOTE: IRS coverage (share of structures sprayed) and IG2 coverage "
@@ -2022,7 +2025,8 @@ def describe_scenarios(scenarios):
              if len(IG2_CAMPAIGN_YEARS) > 1 else 3 * DAYS_PER_YEAR)
     r = mean_retention(cycle)
     if IG2_USE_CURVES:
-        print("\nIG2 usage: MASS age/season curves.")
+        print(f"\nIG2 usage assumptions run: {', '.join(IG2_USAGE_RUN)} "
+              f"(MASS age/season curves switched per assumption).")
         print("  effective use = c x net retention x age multiplier x season multiplier")
         print("  (analyze_scenarios_UWR.py reports it for every c and for the threshold)")
     else:
@@ -2040,11 +2044,10 @@ def describe_scenarios(scenarios):
 def build_camp(habitat_mix=(1.0, 1.0, 1.0), scenario=None):
     """
     Complete campaign for one scenario. `scenario` is a dict from
-    build_scenarios(); None means IRS continuing at the CSV coverage.
+    build_scenarios(); None means the BAU arm (IRS at the CSV coverage).
     """
     if scenario is None:
-        scenario = dict(name="IRS_CONTINUE", kind="irs", coverage=0.0,
-                        irs_coverage=None, kill_key="")
+        scenario = dict(name=BAU_ARM_NAME, kind="irs", coverage=0.0, kill_key="")
 
     if hasattr(camp, "reset"):
         camp.reset()
@@ -2071,8 +2074,8 @@ def build_camp(habitat_mix=(1.0, 1.0, 1.0), scenario=None):
     if has_rows(s["vaccine"]):
         add_vaccine(camp, s["vaccine"])
 
-    # IRS. Common path: rows before IRS_SWITCH_YEAR are in EVERY arm and are
-    # never rescaled, so 2026 is identical in all arms.
+    # IRS. Common path: rows before IRS_SWITCH_YEAR are in EVERY arm, so 2026
+    # is identical in all arms.
     if not has_rows(s["irs"]):
         raise ValueError("No IRS rows: check IRS_FILE and REFERENCE_YEAR.")
 
@@ -2082,9 +2085,10 @@ def build_camp(habitat_mix=(1.0, 1.0, 1.0), scenario=None):
     # Scenario-specific part, from 1 Jan IRS_SWITCH_YEAR.
     if scenario["kind"] == "irs":
         irs_after = s["irs"][s["irs"]["year"] >= IRS_SWITCH_YEAR]
-        add_irs(camp, rescale_irs_coverage(irs_after, scenario.get("irs_coverage")))
+        add_irs(camp, irs_after)
     elif scenario["kind"] == "ig2":
-        add_ig2(camp, scenario["coverage"], IG2_KILL_DECAY[scenario["kill_key"]])
+        add_ig2(camp, scenario["coverage"], IG2_KILL_DECAY[scenario["kill_key"]],
+                scenario.get("usage", "full"))
     elif scenario["kind"] != "none":
         raise ValueError(f"Unknown scenario kind {scenario['kind']}")
 
@@ -2131,7 +2135,25 @@ def load_pickup_df(pickup_id, platform):
         raise ValueError("No pickup simulations left after PICKUP_FILTER.")
 
     # Select calibrated parameter sets
-    return select_parameter_sets(df.reset_index(drop=True))
+    df = select_parameter_sets(df.reset_index(drop=True))
+
+    # Fail before submission if any pickup state file is gone (e.g. the pickup
+    # experiment folder was deleted); otherwise every simulation dies at t=0.
+    missing_states = []
+    for _, r in df.iterrows():
+        names = r["Serialized_Population_Filenames"]
+        names = [names] if isinstance(names, str) else list(names)
+        for n in names:
+            p = os.path.join(str(r["serialized_file_path"]), "output", n)
+            if not os.path.isfile(p):
+                missing_states.append(p)
+    if missing_states:
+        raise FileNotFoundError(
+            f"{len(missing_states)} pickup state file(s) of experiment {pickup_id} "
+            f"are missing, e.g.\n  {missing_states[0]}\n"
+            f"Re-run the pickup and update PICKUP_EXPERIMENT_ID.")
+
+    return df
 
 
 def select_parameter_sets(df):
@@ -2311,7 +2333,6 @@ def update_simulation(simulation, pair, df):
     # Safety layer: keep the pickup events in the config after pre_creation.
     install_event_patch(simulation)
 
-    irs_cov = scenario.get("irs_coverage")
     return {
         "Run_Number": seed,
         "pickup_sim_index": int(x),
@@ -2322,8 +2343,8 @@ def update_simulation(simulation, pair, df):
         "scenario": scenario["name"],
         "scenario_kind": scenario["kind"],
         "ig2_coverage": float(scenario["coverage"]),
-        "irs_coverage": float(irs_cov) if irs_cov is not None else np.nan,
         "ig2_kill_key": scenario["kill_key"],
+        "ig2_usage": scenario.get("usage", ""),
         "projection_start_year": PROJ_START,
     }
 
@@ -2627,8 +2648,10 @@ if __name__ == "__main__":
         print(f"  Net-use counter: {'ON' if ADD_NET_USE_COUNTER else 'OFF'}")
 
         print("\nPreview check (habitat mix placeholder 1.0, 1.0, 1.0):")
-        previews = ([s for s in SCENARIOS if s["kind"] == "irs"][:1]
-                    + [s for s in SCENARIOS if s["kind"] == "ig2"][:1])
+        previews = [s for s in SCENARIOS if s["kind"] == "irs"][:1]
+        for usage in IG2_USAGE_RUN:            # one IG2 preview per net-use assumption
+            previews += [s for s in SCENARIOS
+                         if s["kind"] == "ig2" and s.get("usage") == usage][:1]
         for sc in previews:
             build_camp(habitat_mix=(1.0, 1.0, 1.0), scenario=sc)
             out = f"campaign_preview_{sc['name']}.json"
@@ -2646,9 +2669,9 @@ if __name__ == "__main__":
         print(f"\nEvent recorder will record {len(events)} events.")
         print("Pickup event registration is skipped in a dry run (the pickup configs "
               "are only read at submission).")
-        print(f"\nExpected: IRS_<c> arms have IRS in every year and no IG2 nets. The IG2 "
+        print(f"\nExpected: the BAU arm has IRS in every year and no IG2 nets. The IG2 "
               f"preview has IRS only for years before {IRS_SWITCH_YEAR} (fewer IRS "
-              f"events than the IRS_<c> arms, not zero) and IG2 nets > 0.")
+              f"events than the BAU arm, not zero) and IG2 nets > 0.")
         print("Dry run OK. Nothing submitted.")
         sys.exit(0)
 

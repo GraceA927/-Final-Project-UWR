@@ -5,8 +5,11 @@ Method
 ------
 1. Keep each EMOD run separate:
    (xTLH, scale_constant, scale_temp_rain, scale_water_veg, Run_Number).
-2. Match each DHS survey to the 30-day EMOD reporting block containing its
-   fieldwork midpoint, using the flat 365-day model calendar.
+2. Match each DHS survey to the EMOD model YEAR and MONTH of its fieldwork
+   midpoint. Simulation rows are labelled with model_year / model_month by the
+   pickup analyzer (flat 365-day calendar, 29 Feb dropped from the climate, so
+   model months and Gregorian months are the same months). No 30-day blocks and
+   no day-of-year arithmetic are used here.
 3. Calculate rounded simulated positives within each run:
        npos = round(PfPR * Pop)
 4. Score each complete run against all DHS surveys using beta-binomial
@@ -18,6 +21,9 @@ Method
 The plot shows mean simulated PfPR trajectories across all other parameter
 combinations and seeds at each xTLH. Incomplete runs are excluded from
 likelihood scoring and counted in the diagnostics.
+
+Input requirement: PfPR_ClinicalIncidence_monthly_pickup.csv must contain the
+model_year and model_month columns written by the updated pickup analyzer.
 """
 
 import os
@@ -27,6 +33,7 @@ mpl.use("Agg")
 
 import matplotlib.pyplot as plt
 import numpy as np
+from itertools import product
 import pandas as pd
 
 try:
@@ -51,9 +58,9 @@ try:
 except (ImportError, AttributeError):
     JOB_DIR = os.path.join(PROJECT_DIR, "experiments")
 
-EXPERIMENT_NAME = "Pickup13yrs_xTLHfine"
+EXPERIMENT_NAME = "Pickup13yrs_Final"     # round-2 habitat-type grid (6ce151ce); spline run: Pickup13yrs_Spline
 ANALYZER_DIR = os.path.join(
-    JOB_DIR, f"{EXPERIMENT_NAME}_AnalyzerOutput"
+    JOB_DIR, f"{EXPERIMENT_NAME}_AnalyzerOutput"           # analyzer_Pickup13yr.py output folder
 )
 
 SIM_PFPR_CSV = os.path.join(
@@ -68,30 +75,89 @@ OUTPUT_DIR = ANALYZER_DIR
 
 PICKUP_START_YEAR = 2013
 PICKUP_END_YEAR = 2025
-
-BLOCK_DAYS = 30
-N_BLOCKS = 12
+N_MONTHS = 12
 DAYS_PER_YEAR = 365
 
 # Fixed-month-length EMOD calendar; must match the analyzer/pickup script.
+# Used only to place points on the plots (mid-month).
 MONTH_START = {
     1: 0, 2: 31, 3: 59, 4: 90,
     5: 120, 6: 151, 7: 181, 8: 212,
     9: 243, 10: 273, 11: 304, 12: 334,
 }
-FEB_28_MODEL_DAY = 58
+MONTH_LEN = {
+    1: 31, 2: 28, 3: 31, 4: 30,
+    5: 31, 6: 30, 7: 31, 8: 31,
+    9: 30, 10: 31, 11: 30, 12: 31,
+}
 
 # DHS children 6-59 months correspond to the 0.5-5 year age bin.
 SURVEY_AGEBINS = (5.0,)
 
 XCOL = "x_Temporary_Larval_Habitat"
-OTHER_VARS = [
-    "scale_constant",
-    "scale_temp_rain",
-    "scale_water_veg",
-]
+# Habitat tags of the run (Site_Setup_Final.HABITAT_MODE):
+#   spline: spline_lag, spline_power, spline_scale   types: scale_constant, scale_temp_rain, scale_water_veg
+HABITAT_MODE = "types"
+OTHER_VARS = (["spline_lag", "spline_power", "spline_scale"] if HABITAT_MODE == "spline"
+              else ["scale_constant", "scale_temp_rain", "scale_water_veg"])
 SEED_VAR = "Run_Number"
 RUN_KEYS = [XCOL] + OTHER_VARS + [SEED_VAR]
+
+# IRS calibration grid tags (Site_Setup_Final.IRS_SWEEP). When they are present
+# in the simulation CSV, selection is joint over (xTLH, IRS settings). Averaging LL
+# across IRS settings would mix settings that eliminate transmission with ones
+# that don't.
+IRS_VARS = ["irs_kill_scale", "irs_decay_scale", "irs_coverage_scale"]
+# Habitat-decay sweep tags (Site_Setup_Final.PICKUP_CONFIG_SWEEP), scored jointly like IRS.
+DECAY_VARS = ["Temporary_Habitat_Decay_Factor", "Semipermanent_Habitat_Decay_Rate"]
+SEL_KEYS = [XCOL]          # + IRS_VARS when IRS tags exist, + OTHER_VARS with seasonality
+
+# Seasonality from routine U5 confirmed cases (inputs/monthly_U5_conf.csv).
+# Only the within-year SHAPE is compared (each year divided by its mean), because
+# the level of reported cases depends on testing/reporting, which changed over time.
+# With seasonality on, every full parameter set (xTLH + habitat + IRS) is scored
+# separately (mean over seeds), and the best set is the highest DHS PfPR LL among
+# sets whose seasonal profile correlates r >= SEASON_MIN_R with the observed one.
+USE_SEASONALITY = True
+OBS_U5_FILE = "monthly_U5_conf.csv"
+OBS_POP_COL = "Pop_5"          # U5 population; None = no per-person scaling
+# Observed monthly totals are converted to an annualised rate per person,
+#   rate = cases / Pop_5 * 365 / days_in_month,
+# the same scale as the simulated 'Annual Clinical Incidence' (Cases).
+OBS_U5_COL = "conf_u5"         # file columns: Region,year,month,conf_u5,adj1_conf_u5,Pop_5,observed_incidence_per_1000
+SEASON_YEARS = (2015, 2025)
+SEASON_MIN_R = 0.6             # climatology correlation (Jan-Dec mean profile)
+SEASON_MAX_PEAK_DIFF = 1       # |simulated - observed peak month| allowed (months)
+# LAG ADJUSTMENT. The simulated profile can be moved EARLIER by L months before it
+# is compared with the observed one. "auto" picks, per parameter set, the L in
+# 0..SEASON_MAX_LAG with the highest climatology r; an int fixes L for every set;
+# 0 switches the adjustment off. The unshifted r (season_r_raw) and the lag used
+# (season_lag) are always reported, and the plot draws the raw curve too.
+# NOTE: this aligns the comparison only; the model's transmission season is still
+# L months later than observed, which matters for intervention timing (IRS in April,
+# IG2 on 1 April) in the scenario runs. Report the lag with the results.
+SEASON_LAG_MONTHS = 0 if HABITAT_MODE == "spline" else "auto"   # spline run: no shift
+SEASON_MAX_LAG = 3
+# Simulated U5 = all report age bins with upper edge <= 5 (0-0.25 and 0.25-5),
+# combined population-weighted: sum(Cases x Pop) / sum(Pop).
+U5_AGEBIN_MAX = 5.0
+# Habitat grid swept in the burn-in (Site_Setup_Final.py), xTLH fixed at 37.4.
+# The calibration reports the best (constant, temp_rain, water_veg) from this grid.
+HABITAT_GRID = ({
+    "spline_lag": [1.0, 2.0, 3.0],
+    "spline_power": [0.5, 1.0, 1.5],
+    "spline_scale": [0.75, 1.25, 2.0],
+} if HABITAT_MODE == "spline" else {
+    "scale_constant": [0.0, 0.1, 0.25, 0.5],
+    "scale_temp_rain": [8.0, 14.0, 20.0],
+    "scale_water_veg": [0.1, 0.5, 1.0],
+})
+# Only the seasonality plot is produced (xTLH is fixed, so the xTLH/PfPR
+# selection plot and the IRS grid plot are skipped).
+PLOT_ONLY_SEASONALITY = True
+N_SEASON_ALTERNATIVES = 3      # runner-up habitat sets drawn faintly on the plot
+MONTHS = ["January", "February", "March", "April", "May", "June", "July",
+          "August", "September", "October", "November", "December"]
 
 C_BEST = "firebrick"
 C_OBS = "black"
@@ -136,13 +202,27 @@ def _parse_dates(series):
         return pd.to_datetime(series)
 
 
+def month_midpoint_date(year, month):
+    """Plot position: middle of the model month (flat 365-day calendar)."""
+    month = int(month)
+    mid_day = MONTH_START[month] + (MONTH_LEN[month] - 1) / 2.0
+    return (
+        pd.Timestamp(year=int(year), month=1, day=1)
+        + pd.to_timedelta(mid_day, unit="D")
+    )
+
+
+def _is_complete(series):
+    return (
+        series.astype(str).str.strip().str.lower()
+        .isin(["true", "1", "t", "yes", "y"])
+    )
+
+
 def load_dhs_data(csv_path):
     """
-    Load DHS surveys and map each fieldwork midpoint to the 30-day EMOD
-    reporting block containing it.
-
-    This deliberately does not match by Gregorian month: analyzer month/
-    report_interval represents a 30-day block, not a calendar month.
+    Load DHS surveys and assign each one the calendar year and month of its
+    fieldwork midpoint. The simulation is matched on (year, month) only.
     """
     df = pd.read_csv(csv_path, sep=None, engine="python")
 
@@ -162,36 +242,13 @@ def load_dhs_data(csv_path):
     )
 
     df["date"] = midpoint
-    df["year"] = midpoint.dt.year
+    df["year"] = midpoint.dt.year.astype(int)
+    df["month"] = midpoint.dt.month.astype(int)
 
-    model_day = (
-        midpoint.dt.month.map(MONTH_START)
-        + midpoint.dt.day - 1
-    )
-
-    leap_day = midpoint.dt.month.eq(2) & midpoint.dt.day.eq(29)
-    model_day.loc[leap_day] = FEB_28_MODEL_DAY
-
-    df["model_day"] = model_day.astype(int)
-
-    # Position on the same flat 365-day calendar used by EMOD.
-    df["plot_date"] = (
-        pd.to_datetime(df["year"].astype(int).astype(str) + "-01-01")
-        + pd.to_timedelta(df["model_day"], unit="D")
-    )
-
-    df["block"] = (
-        df["model_day"] // BLOCK_DAYS + 1
-    ).astype(int)
-
-    # The 13th interval is a 5-day tail and is not used.
-    late = df["block"] > N_BLOCKS
-    if late.any():
-        print(
-            f"Excluding {int(late.sum())} DHS survey(s) mapped to "
-            "the incomplete 13th reporting interval."
-        )
-        df = df.loc[~late].copy()
+    # Plot position on the same flat calendar as the simulation points.
+    df["plot_date"] = [
+        month_midpoint_date(y, m) for y, m in zip(df["year"], df["month"])
+    ]
 
     in_range = df["year"].between(
         PICKUP_START_YEAR, PICKUP_END_YEAR
@@ -217,15 +274,36 @@ def load_dhs_data(csv_path):
 # Simulation loading
 # ---------------------------------------------------------------------
 
+def _model_calendar_cols(df):
+    """analyzer_Pickup13yr.py writes the midpoint model year/month as 'year'/'month';
+    the PREG analyzer writes 'model_year'/'model_month'. Accept both."""
+    if "model_year" not in df.columns and {"year", "month"} <= set(df.columns):
+        df = df.rename(columns={"year": "model_year", "month": "model_month"})
+    return df
+
+
 def load_sim_per_run(csv_path):
     """
-    Load one row per simulation run x year x 30-day block.
+    Load one row per simulation run x model year x model month.
 
     The Run_Number and all habitat parameter tags are retained so that
     each simulation run is scored independently, as in the reference code.
     """
+    global RUN_KEYS, SEL_KEYS
     df = pd.read_csv(csv_path)
     df.columns = [c.replace(" U5", "") for c in df.columns]
+    df = _model_calendar_cols(df)
+
+    sweep_vars = [v for v in IRS_VARS if v in df.columns and df[v].notna().all()]
+    sweep_vars += [v for v in DECAY_VARS if v in df.columns and df[v].notna().all()]
+    if sweep_vars:
+        RUN_KEYS = [XCOL] + OTHER_VARS + sweep_vars + [SEED_VAR]
+        SEL_KEYS = [XCOL] + sweep_vars
+        print(f"IRS/decay sweep tags found: selecting jointly over {SEL_KEYS}")
+    if USE_SEASONALITY:
+        # Habitat mix sets seasonality, so score each full parameter set.
+        SEL_KEYS = SEL_KEYS[:1] + OTHER_VARS + SEL_KEYS[1:]
+        print(f"Seasonality on: scoring each parameter set {SEL_KEYS}")
 
     missing_tags = [c for c in RUN_KEYS if c not in df.columns]
     if missing_tags:
@@ -234,25 +312,24 @@ def load_sim_per_run(csv_path):
             f"Columns present: {list(df.columns)}"
         )
 
-    block_col = (
-        "report_interval" if "report_interval" in df.columns
-        else "month" if "month" in df.columns
-        else None
-    )
-    if block_col is None:
-        raise ValueError(
-            "Simulation CSV must contain report_interval or month."
-        )
-
-    required = ["Year", block_col, "agebin", "PfPR", "Pop"]
+    required = ["model_year", "model_month", "agebin", "PfPR", "Pop"]
     missing = [c for c in required if c not in df.columns]
     if missing:
-        raise ValueError(f"Simulation CSV is missing columns: {missing}")
+        raise ValueError(
+            f"Simulation CSV is missing columns: {missing}. "
+            "model_year / model_month are written by the updated pickup "
+            "analyzer; re-run it on this experiment."
+        )
 
-    df = df.rename(columns={"Year": "year", block_col: "block"})
+    # Label rows by model year and month; the analyzer's report-year column
+    # ('Year') is dropped so it cannot be confused with model_year.
+    df = (
+        df.drop(columns=["Year"], errors="ignore")
+        .rename(columns={"model_year": "year", "model_month": "month"})
+    )
 
     keep = (
-        df["block"].between(1, N_BLOCKS)
+        df["month"].between(1, N_MONTHS)
         & df["year"].between(PICKUP_START_YEAR, PICKUP_END_YEAR)
         & np.isin(
             np.round(df["agebin"].astype(float), 6),
@@ -260,14 +337,12 @@ def load_sim_per_run(csv_path):
         )
     )
 
-    # Exclude the incomplete interval 13 explicitly when the flag exists.
+    # Exclude partial reporting intervals when the flag exists.
     if "is_complete_interval" in df.columns:
-        complete = (
-            df["is_complete_interval"]
-            .astype(str).str.strip().str.lower()
-            .isin(["true", "1", "t", "yes", "y"])
-        )
-        keep &= complete
+        keep &= _is_complete(df["is_complete_interval"])
+    else:
+        print("WARNING: no is_complete_interval column; partial intervals "
+              "are averaged into their month.")
 
     df = df.loc[keep].copy()
 
@@ -283,25 +358,40 @@ def load_sim_per_run(csv_path):
         df[col] = pd.to_numeric(df[col], errors="coerce")
 
     df = df[df["Pop"].gt(0) & df["PfPR"].notna()].copy()
-
-    # If multiple selected age rows exist within a run/block, combine them
-    # using population-weighted prevalence before calculating positives.
-    # For the usual single 0.5-5y bin, this leaves the row unchanged.
-    group_cols = RUN_KEYS + ["year", "block"]
-    agg = {
-        "Pop": "sum",
-        "npos_unrounded": "sum",
-        "PfPR": "mean",
-    }
-
     df["npos_unrounded"] = df["PfPR"] * df["Pop"]
 
-    if "interval_midpoint_model_time" in df.columns:
-        agg["interval_midpoint_model_time"] = "mean"
+    month_cols = RUN_KEYS + ["year", "month"]
+    interval_cols = (
+        ["interval_start_day"] if "interval_start_day" in df.columns else []
+    )
+
+    # Step 1: within each reporting interval, combine selected age rows
+    # (for the usual single 0.5-5y bin this leaves the row unchanged).
+    per_interval = (
+        df.groupby(month_cols + interval_cols, as_index=False)
+        .agg(
+            Pop=("Pop", "sum"),
+            npos_unrounded=("npos_unrounded", "sum"),
+            PfPR=("PfPR", "mean"),
+        )
+    )
+
+    # Step 2: one row per run x year x month. If several intervals fall in the
+    # same model month they are averaged, never summed.
+    n_per_month = per_interval.groupby(month_cols).size()
+    if (n_per_month > 1).any():
+        print(
+            f"NOTE: {int((n_per_month > 1).sum())} run-months contain more "
+            "than one reporting interval; intervals are averaged."
+        )
 
     run_df = (
-        df.groupby(group_cols, as_index=False)
-        .agg(agg)
+        per_interval.groupby(month_cols, as_index=False)
+        .agg(
+            Pop=("Pop", "mean"),
+            npos_unrounded=("npos_unrounded", "mean"),
+            PfPR=("PfPR", "mean"),
+        )
     )
 
     # Reference script convention: round simulated positive counts.
@@ -386,13 +476,13 @@ def score_xtlh(sim_df, data_df):
 
     for keys, run in sim_df.groupby(RUN_KEYS, sort=False):
 
-        # Each run must contain exactly one row for each DHS year/block.
+        # Each run must contain exactly one row for each DHS year/month.
         try:
             merged = data_df.merge(
                 run[
-                    ["year", "block", "Pop", "npos", "sim_PfPR"]
+                    ["year", "month", "Pop", "npos", "sim_PfPR"]
                 ],
-                on=["year", "block"],
+                on=["year", "month"],
                 how="left",
                 validate="many_to_one",
             )
@@ -423,7 +513,7 @@ def score_xtlh(sim_df, data_df):
     if not rows:
         raise ValueError(
             "No complete simulation run matched every DHS survey. "
-            "Check survey-to-block mapping and simulation output coverage."
+            "Check survey year/month and simulation output coverage."
         )
 
     run_scores = pd.DataFrame(
@@ -431,9 +521,10 @@ def score_xtlh(sim_df, data_df):
         columns=RUN_KEYS + ["ll", "n_surveys_unmatched"]
     )
 
-    # Reference method: mean run-level likelihood for each xTLH.
+    # Reference method: mean run-level likelihood for each xTLH
+    # (or each full parameter set when seasonality is on).
     score_df = (
-        run_scores.groupby(XCOL, as_index=False)
+        run_scores.groupby(SEL_KEYS, as_index=False)
         .agg(
             ll=("ll", "mean"),
             n_runs=("ll", "size"),
@@ -458,8 +549,11 @@ def score_parameter_sets(run_scores):
     reporting; xTLH selection still uses the mean across all other
     parameters and seeds.
     """
+    # SEL_KEYS already contains OTHER_VARS when seasonality is on; avoid
+    # duplicate group keys.
+    keys = list(dict.fromkeys(SEL_KEYS + OTHER_VARS))
     return (
-        run_scores.groupby([XCOL] + OTHER_VARS, as_index=False)
+        run_scores.groupby(keys, as_index=False)
         .agg(
             ll=("ll", "mean"),
             n_runs=("ll", "size"),
@@ -474,24 +568,11 @@ def score_parameter_sets(run_scores):
 # ---------------------------------------------------------------------
 
 def _add_plot_dates(sim_df):
-    """Add dates using analyzer model-time midpoints or block midpoints."""
+    """Add a mid-month plot date from model year and month."""
     sim = sim_df.copy()
-    year_start = pd.to_datetime(
-        sim["year"].astype(int).astype(str) + "-01-01"
-    )
-
-    if (
-        "interval_midpoint_model_time" in sim.columns
-        and sim["interval_midpoint_model_time"].notna().all()
-    ):
-        days = (
-            sim["interval_midpoint_model_time"]
-            - sim["year"].astype(float)
-        ) * DAYS_PER_YEAR
-    else:
-        days = BLOCK_DAYS * (sim["block"].astype(float) - 0.5)
-
-    sim["date"] = year_start + pd.to_timedelta(days, unit="D")
+    sim["date"] = [
+        month_midpoint_date(y, m) for y, m in zip(sim["year"], sim["month"])
+    ]
     return sim
 
 
@@ -510,25 +591,31 @@ def plot_xtlh(sim_df, data_df, score_df, out_png):
     """
     # Average trajectories across all other parameters and seeds at each
     # xTLH, matching the reference plotting approach.
-    plot_group_cols = ["year", "block", XCOL]
+    plot_group_cols = ["year", "month", XCOL]
 
-    agg = {
-        "PfPR": "mean",
-    }
-    if "interval_midpoint_model_time" in sim_df.columns:
-        agg["interval_midpoint_model_time"] = "mean"
+    if score_df["ll"].dropna().empty:
+        raise ValueError("All xTLH likelihood scores are missing.")
+    best = pick_best(score_df)
+
+    # When selecting over full parameter sets, show xTLH trajectories / LL
+    # profile at the best values of the other selected parameters.
+    fixed_vars = [v for v in SEL_KEYS if v != XCOL]
+    fixed_label = ""
+    if fixed_vars:
+        sel = np.all([np.isclose(sim_df[v], best[v]) for v in fixed_vars], axis=0)
+        sim_df = sim_df[sel]
+        sel = np.all([np.isclose(score_df[v], best[v]) for v in fixed_vars], axis=0)
+        score_df = score_df[sel]
+        short = {"scale_constant": "const", "scale_temp_rain": "rain",
+                 "scale_water_veg": "veg", "irs_kill_scale": "IRS kill x",
+                 "irs_decay_scale": "decay x", "irs_coverage_scale": "cov x"}
+        fixed_label = ", ".join(f"{short.get(v, v)} {best[v]:g}" for v in fixed_vars)
 
     sim_agg = (
         sim_df.groupby(plot_group_cols, as_index=False)
-        .agg(agg)
+        .agg(PfPR=("PfPR", "mean"))
     )
     sim_agg = _add_plot_dates(sim_agg)
-
-    valid = score_df.dropna(subset=["ll"])
-    if valid.empty:
-        raise ValueError("All xTLH likelihood scores are missing.")
-
-    best = valid.loc[valid["ll"].idxmax()]
 
     obs = data_df.copy()
     obs["date"] = obs["plot_date"]
@@ -597,7 +684,7 @@ def plot_xtlh(sim_df, data_df, score_df, out_png):
 
         ax2.set_xlabel("Larval habitat multiplier (xTLH)")
         ax2.set_ylabel("Mean log-likelihood")
-        ax2.set_title("Larger value = better fit")
+        ax2.set_title("Larger value = better fit" )
         ax2.legend(frameon=False, loc="best")
         _clean_axes(ax2)
 
@@ -608,23 +695,289 @@ def plot_xtlh(sim_df, data_df, score_df, out_png):
     print(f"Wrote {out_png}")
 
 
+def _norm_by_year(df, value_col, year_col):
+    mean = df.groupby(year_col)[value_col].transform("mean")
+    return df[value_col] / mean.where(mean > 0)
+
+
+def load_obs_season_monthly(csv_path):
+    """Observed U5 monthly rates by year, each year scaled to mean 1.
+
+    Monthly routine counts -> annualised rate per child, on the same scale as
+    EMOD's 'Annual Clinical Incidence' per 30-day block:
+        rate = cases / Pop_5 x 365 / days_in_month
+    Dividing by days removes the 28-31 day month-length effect; dividing each
+    year by its own mean removes level changes (testing/reporting, IRS), so
+    only the within-year shape is compared. Returns columns year, m, idx."""
+    obs = pd.read_csv(csv_path)
+    obs.columns = [c.strip() for c in obs.columns]
+    if "Age_Group" in obs.columns:
+        obs = obs[obs["Age_Group"].astype(str).str.strip().str.upper() == "U5"]
+    obs = obs.rename(columns={"Year": "year", "Month": "month"})
+    obs["m"] = obs["month"].astype(str).str.strip().map(
+        {m: i + 1 for i, m in enumerate(MONTHS)})
+    obs[OBS_U5_COL] = pd.to_numeric(obs[OBS_U5_COL], errors="coerce")
+    use_pop = bool(OBS_POP_COL) and OBS_POP_COL in obs.columns
+    if use_pop:
+        obs[OBS_POP_COL] = pd.to_numeric(obs[OBS_POP_COL], errors="coerce")
+    else:
+        print("NOTE: no population column; observed rate is annualised "
+              "per month but not divided by population.")
+    obs = obs[obs["year"].between(*SEASON_YEARS)].dropna(subset=["m", OBS_U5_COL])
+    agg = {"cases": (OBS_U5_COL, "sum")}
+    if use_pop:
+        agg["pop"] = (OBS_POP_COL, "mean")
+    obs = obs.groupby(["year", "m"], as_index=False).agg(**agg)
+    full = obs.groupby("year")["m"].nunique()
+    obs = obs[obs["year"].isin(full[full == 12].index)].copy()
+    days = obs["m"].astype(int).map(MONTH_LEN)
+    obs["rate"] = obs["cases"] / (obs["pop"] if use_pop else 1.0) * DAYS_PER_YEAR / days
+    obs["idx"] = _norm_by_year(obs, "rate", "year")
+    return obs[["year", "m", "rate", "idx"]]
+
+
+def load_obs_season(csv_path):
+    """Observed U5 seasonal profile (12 values, mean 1) averaged over SEASON_YEARS."""
+    obs = load_obs_season_monthly(csv_path)
+    clim = obs.groupby("m")["idx"].mean().reindex(range(1, 13))
+    return (clim / clim.mean()).to_numpy()
+
+
+def _safe_r(a, b):
+    a, b = np.asarray(a, float), np.asarray(b, float)
+    if len(a) < 3 or np.ptp(a) == 0 or np.ptp(b) == 0:
+        return np.nan
+    return float(np.corrcoef(a, b)[0, 1])
+
+
+def _choose_lag(clim, obs_clim):
+    """Months to move the simulated profile earlier (see SEASON_LAG_MONTHS)."""
+    if SEASON_LAG_MONTHS == "auto":
+        rs = [np.corrcoef(np.roll(clim, -L), obs_clim)[0, 1] for L in range(SEASON_MAX_LAG + 1)]
+        return int(np.nanargmax(rs))
+    return int(SEASON_LAG_MONTHS or 0)
+
+
+def _shift_months(g, lag):
+    """Relabel simulated (year, month) rows `lag` months earlier, so sim month m+lag
+    lines up with observed month m (year-by-year comparison)."""
+    if not lag:
+        return g
+    g = g.copy()
+    t = g["year"] * 12 + (g["month"] - 1) - int(lag)
+    g["year"], g["month"] = t // 12, t % 12 + 1
+    return g
+
+
+def season_scores(csv_path, obs_clim, keys, obs_monthly=None):
+    """Seasonal fit of simulated U5 clinical incidence for each parameter set.
+
+    Simulated: 'Cases' is annualised clinical incidence per person in each
+    complete 30-day block (block k = model month k). U5 = population-weighted
+    mean over the 0-0.25 and 0.25-5 bins. Seed-mean, then each year divided by
+    its own mean (same scaling as the observed series).
+
+    Scores (all on the within-year shape):
+      season_r          r of the Jan-Dec mean profiles (climatology)
+      season_r_years    r over every matched year-month (year-by-year shape)
+      season_rmse       RMSE of the climatologies (mean-1 scale)
+      sim_peak_month, peak_diff_months, amplitude_ratio (peak-trough range ratio)
+      peak_hit_frac     share of years whose simulated peak is within
+                        SEASON_MAX_PEAK_DIFF months of that year's observed peak
+    """
+    df = pd.read_csv(csv_path)
+    df.columns = [c.replace(" U5", "") for c in df.columns]
+    df = _model_calendar_cols(df)
+    for c in ("model_year", "model_month"):
+        if c not in df.columns:
+            raise ValueError(
+                f"Simulation CSV is missing '{c}'; re-run the updated pickup analyzer."
+            )
+    ab = df["agebin"].astype(float)
+    sel = ((ab <= U5_AGEBIN_MAX + 1e-9)
+           & df["model_month"].between(1, 12)
+           & df["model_year"].between(*SEASON_YEARS))
+    if "is_complete_interval" in df.columns:
+        sel &= _is_complete(df["is_complete_interval"])
+    df = df[sel].copy()
+    df["cxp"] = df["Cases"] * df["Pop"]
+    seed_keys = keys + [SEED_VAR, "model_year", "model_month"]
+    u5 = df.groupby(seed_keys, as_index=False)[["cxp", "Pop"]].sum()
+    u5["Cases"] = u5["cxp"] / u5["Pop"].where(u5["Pop"] > 0)
+    prof = (u5.groupby(keys + ["model_year", "model_month"], as_index=False)["Cases"].mean()
+            .rename(columns={"model_year": "year", "model_month": "month"}))
+    prof["idx"] = prof.groupby(keys + ["year"])["Cases"].transform(
+        lambda v: v / v.mean() if v.mean() > 0 else np.nan)
+
+    obs_peak = int(np.argmax(obs_clim)) + 1
+    obs_year_peak = None
+    if obs_monthly is not None:
+        ov = obs_monthly.dropna(subset=["idx"])
+        obs_year_peak = ov.loc[ov.groupby("year")["idx"].idxmax()].set_index("year")["m"]
+    rows = []
+    for k, g in prof.groupby(keys):
+        k = np.atleast_1d(k)
+        clim = g.groupby("month")["idx"].mean().reindex(range(1, 13)).to_numpy()
+        if not np.isfinite(clim).all():
+            rows.append((*k,) + (np.nan,) * 9)
+            continue
+        clim = clim / clim.mean()
+        r_raw = float(np.corrcoef(clim, obs_clim)[0, 1])
+        lag = _choose_lag(clim, obs_clim)
+        clim = np.roll(clim, -lag)                  # sim month m+lag compared with obs month m
+        peak = int(np.argmax(clim)) + 1
+        diff = (peak - obs_peak + 6) % 12 - 6
+        amp = (clim.max() - clim.min()) / (obs_clim.max() - obs_clim.min())
+        rmse = float(np.sqrt(np.mean((clim - obs_clim) ** 2)))
+        r_years = hit = np.nan
+        if obs_monthly is not None:
+            g = _shift_months(g, lag)
+            m = g.merge(obs_monthly, left_on=["year", "month"], right_on=["year", "m"],
+                        suffixes=("_sim", "_obs")).dropna(subset=["idx_sim", "idx_obs"])
+            r_years = _safe_r(m["idx_sim"], m["idx_obs"])
+            gv = g.dropna(subset=["idx"])
+            sim_year_peak = gv.loc[gv.groupby("year")["idx"].idxmax()].set_index("year")["month"]
+            yrs = sim_year_peak.index.intersection(obs_year_peak.index)
+            if len(yrs):
+                d = ((sim_year_peak[yrs] - obs_year_peak[yrs] + 6) % 12 - 6).abs()
+                hit = float((d <= SEASON_MAX_PEAK_DIFF).mean())
+        rows.append((*k, float(np.corrcoef(clim, obs_clim)[0, 1]), r_years, rmse,
+                     peak, diff, float(amp), hit, r_raw, lag))
+    cols = keys + ["season_r", "season_r_years", "season_rmse", "sim_peak_month",
+                   "peak_diff_months", "amplitude_ratio", "peak_hit_frac",
+                   "season_r_raw", "season_lag"]
+    return pd.DataFrame(rows, columns=cols), prof
+
+
+def season_ok(score_df):
+    """Seasonality filter: climatology r and peak month close to observed."""
+    ok = score_df["season_r"] >= SEASON_MIN_R
+    ok &= score_df["peak_diff_months"].abs() <= SEASON_MAX_PEAK_DIFF
+    return ok
+
+
+def pick_best(score_df):
+    """Highest PfPR LL among sets that pass the seasonality filter
+    (season_r >= SEASON_MIN_R and |peak diff| <= SEASON_MAX_PEAK_DIFF);
+    falls back to the highest LL if no set passes."""
+    valid = score_df.dropna(subset=["ll"])
+    if "season_r" in valid.columns:
+        ok = valid[season_ok(valid)]
+        if ok.empty:
+            print(f"\nWARNING: no parameter set passes the seasonality filter "
+                  f"(r >= {SEASON_MIN_R}, |peak diff| <= {SEASON_MAX_PEAK_DIFF}); "
+                  f"best season_r = {valid['season_r'].max():.2f}. Selecting on PfPR LL only.")
+        else:
+            print(f"\n{len(ok)} of {len(valid)} parameter sets pass the seasonality filter.")
+            valid = ok
+    return valid.loc[valid["ll"].idxmax()]
+
+
+def _clim_for(prof, row, keys, shifted=True):
+    sel = np.all([np.isclose(prof[k], row[k]) for k in keys], axis=0)
+    clim = prof[sel].groupby("month")["idx"].mean().reindex(range(1, 13)).to_numpy()
+    clim = clim / np.nanmean(clim)
+    lag = int(row.get("season_lag", 0) or 0) if shifted else 0
+    return np.roll(clim, -lag)
+
+
+def _habitat_label(row):
+    short = {"scale_constant": "const", "scale_temp_rain": "rain", "scale_water_veg": "veg",
+             "spline_lag": "lag", "spline_power": "power", "spline_scale": "scale"}
+    return ", ".join(f"{short.get(k, k)} {row[k]:g}" for k in OTHER_VARS)
+
+
+def plot_season(prof, obs_clim, best, keys, out_png, score_df=None):
+    """Observed vs simulated U5 seasonal profile (each year scaled to mean 1,
+    averaged over SEASON_YEARS): best-fit habitat set plus runners-up."""
+    x = np.arange(1, 13)
+    with mpl.rc_context(PUB_RC):
+        fig, ax = plt.subplots(figsize=(4.6, 3.2))
+        if score_df is not None and N_SEASON_ALTERNATIVES > 0:
+            pool = score_df.dropna(subset=["season_r"])
+            if "season_pass" in pool.columns and pool["season_pass"].any():
+                pool = pool[pool["season_pass"]]
+            pool = pool.sort_values("ll", ascending=False)
+            pool = pool[~np.all([np.isclose(pool[k], best[k]) for k in keys], axis=0)]
+            for i, (_, row) in enumerate(pool.head(N_SEASON_ALTERNATIVES).iterrows()):
+                ax.plot(x, _clim_for(prof, row, keys), "-", color="0.6", linewidth=0.8,
+                        alpha=0.8, label="Runners-up" if i == 0 else None)
+        ax.plot(x, obs_clim, "-o", color=C_OBS, markersize=3, linewidth=1.3,
+                label="Observed U5 confirmed cases")
+        lag = int(best.get("season_lag", 0) or 0)
+        if lag:
+            ax.plot(x, _clim_for(prof, best, keys, shifted=False), "--", color=C_BEST,
+                    linewidth=0.9, alpha=0.6,
+                    label=f"Best fit, unshifted (r = {best['season_r_raw']:.2f})")
+        shift_txt = f", shifted {lag} mo earlier" if lag else ""
+        ax.plot(x, _clim_for(prof, best, keys), "-o", color=C_BEST, markersize=3,
+                linewidth=1.3,
+                label=f"Best fit{shift_txt}: {_habitat_label(best)}\n(r = {best['season_r']:.2f}, "
+                      f"peak {MONTHS[int(best['sim_peak_month']) - 1][:3]})")
+        ax.axhline(1, color="0.85", linewidth=0.6)
+        ax.set_xticks(x, [m[0] for m in MONTHS])
+        ax.set_ylabel("Relative incidence (year mean = 1)")
+        ax.set_title(f"U5 seasonality {SEASON_YEARS[0]}-{SEASON_YEARS[1]}, "
+                     f"xTLH {best[XCOL]:.3g}")
+        ax.legend(frameon=False, loc="upper left", fontsize=6)
+        _clean_axes(ax)
+        fig.tight_layout()
+        fig.savefig(out_png, dpi=SAVE_DPI, bbox_inches="tight")
+        plt.close(fig)
+    print(f"Wrote {out_png}")
+
+
+def plot_irs_grid(score_df, out_png):
+    """Mean LL over the IRS grid at the best xTLH / habitat: one heatmap
+    (killing scale x decay scale) per coverage scale."""
+    best = pick_best(score_df)
+    fixed = [k for k in SEL_KEYS if k not in IRS_VARS]
+    at = score_df[np.all([np.isclose(score_df[k], best[k]) for k in fixed], axis=0)]
+    covs = sorted(at["irs_coverage_scale"].unique())
+    vmin, vmax = at["ll"].min(), at["ll"].max()
+
+    with mpl.rc_context(PUB_RC):
+        fig, axes = plt.subplots(1, len(covs), figsize=(2.2 * len(covs) + 0.8, 2.6),
+                                 squeeze=False, constrained_layout=True)
+        for ax, c in zip(axes[0], covs):
+            grid = (at[np.isclose(at["irs_coverage_scale"], c)]
+                    .pivot_table(index="irs_kill_scale", columns="irs_decay_scale",
+                                 values="ll"))
+            im = ax.imshow(grid.values, origin="lower", cmap="viridis",
+                           vmin=vmin, vmax=vmax, aspect="auto")
+            ax.set_xticks(range(grid.shape[1]), [f"{v:g}" for v in grid.columns])
+            ax.set_yticks(range(grid.shape[0]), [f"{v:g}" for v in grid.index])
+            for i in range(grid.shape[0]):
+                for j in range(grid.shape[1]):
+                    ax.text(j, i, f"{grid.values[i, j]:.1f}", ha="center", va="center",
+                            fontsize=6.5, color="white")
+            ax.set_title(f"Coverage x {c:g}")
+        axes[0][0].set_ylabel("IRS killing multiplier")
+        fig.colorbar(im, ax=axes[0].tolist(), label="Mean log-likelihood", shrink=0.9)
+        fig.supxlabel("Decay time-constant multiplier", fontsize=9)
+        fig.suptitle(f"IRS grid at best xTLH = {best[XCOL]:.1f}", fontsize=9)
+        fig.savefig(out_png, dpi=SAVE_DPI, bbox_inches="tight")
+        plt.close(fig)
+    print(f"Wrote {out_png}")
+
+
 def print_diagnostics(sim_df, data_df):
     """Print survey-to-simulation mapping and run coverage diagnostics."""
-    print("\nSurvey-to-simulation mapping:")
+    print("\nSurvey-to-simulation mapping (matched on year and month):")
     cols = [
-        "date", "model_day", "year", "block",
+        "date", "year", "month",
         "DHS_n", "DHS_pos", "PfPR"
     ]
     print(data_df[cols].to_string(index=False))
 
-    print("\nSimulation reporting blocks:")
-    print(sorted(sim_df["block"].unique()))
+    print("\nSimulation model months:")
+    print(sorted(sim_df["month"].unique()))
 
-    # Check whether every observed survey block occurs in the simulation.
-    available = sim_df[["year", "block"]].drop_duplicates()
-    check = data_df[["year", "block"]].merge(
+    # Check whether every observed survey year/month occurs in the simulation.
+    available = sim_df[["year", "month"]].drop_duplicates()
+    check = data_df[["year", "month"]].merge(
         available,
-        on=["year", "block"],
+        on=["year", "month"],
         how="left",
         indicator=True,
     )
@@ -632,16 +985,16 @@ def print_diagnostics(sim_df, data_df):
 
     if len(unmatched):
         print(
-            "\nWARNING: DHS survey blocks absent from all simulations:"
+            "\nWARNING: DHS survey year/months absent from all simulations:"
         )
         print(
-            unmatched[["year", "block"]]
+            unmatched[["year", "month"]]
             .drop_duplicates()
             .to_string(index=False)
         )
     else:
         print(
-            "\nEvery DHS survey year/block is represented in "
+            "\nEvery DHS survey year/month is represented in "
             "the simulation output."
         )
 
@@ -649,6 +1002,41 @@ def print_diagnostics(sim_df, data_df):
 # ---------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------
+
+def report_best_habitat(score_df, best):
+    """Print and save the best (scale_constant, scale_temp_rain, scale_water_veg)
+    from HABITAT_GRID: highest DHS PfPR LL among sets passing the seasonality
+    filter; also the best set on seasonality alone (highest climatology r)."""
+    sc = score_df.dropna(subset=["season_r"]).copy()
+    grid_ok = np.ones(len(sc), bool)
+    for k, vals in HABITAT_GRID.items():
+        grid_ok &= np.isin(np.round(sc[k].astype(float), 6), np.round(vals, 6))
+    missing = len(list(product(*HABITAT_GRID.values()))) - sc[grid_ok][OTHER_VARS].drop_duplicates().shape[0]
+    if missing:
+        print(f"NOTE: {missing} habitat set(s) of HABITAT_GRID have no seasonality score.")
+    by_season = sc.sort_values("season_r", ascending=False).iloc[0]
+    out = pd.DataFrame([dict(criterion="selected (seasonality filter, then best PfPR LL)",
+                             **{k: best[k] for k in [XCOL] + OTHER_VARS},
+                             **{c: best.get(c) for c in ["ll", "season_r", "season_r_raw",
+                                "season_lag", "season_r_years",
+                                "season_rmse", "sim_peak_month", "peak_diff_months",
+                                "amplitude_ratio", "peak_hit_frac"]}),
+                        dict(criterion="best seasonality only (highest season_r)",
+                             **{k: by_season[k] for k in [XCOL] + OTHER_VARS},
+                             **{c: by_season.get(c) for c in ["ll", "season_r", "season_r_raw",
+                                "season_lag", "season_r_years",
+                                "season_rmse", "sim_peak_month", "peak_diff_months",
+                                "amplitude_ratio", "peak_hit_frac"]})])
+    out.to_csv(os.path.join(OUTPUT_DIR, "best_fit_habitat.csv"), index=False)
+    print("\nBEST-FIT HABITAT (grid: " + "; ".join(f"{k} {v}" for k, v in HABITAT_GRID.items()) + ")")
+    print(out.to_string(index=False, float_format=lambda v: f"{v:.3g}"))
+    print("\nSet in Site_Setup_Final.py for the next run:")
+    names = {"scale_constant": "SCALE_CONSTANT", "scale_temp_rain": "SCALE_TEMP_RAIN",
+             "scale_water_veg": "SCALE_WATER_VEG", "spline_lag": "SPLINE_LAG_MONTHS",
+             "spline_power": "SPLINE_POWER", "spline_scale": "SPLINE_SCALE"}
+    for k in OTHER_VARS:
+        print(f"  {names[k]} = [{best[k]:g}]")
+
 
 def main():
     os.makedirs(OUTPUT_DIR, exist_ok=True)
@@ -670,20 +1058,50 @@ def main():
 
     score_df, run_scores = score_xtlh(sim_df, data_df)
 
-    print("\nMean run-level log-likelihood by xTLH (best first):")
-    print(score_df.to_string(index=False))
+    prof = obs_clim = None
+    if USE_SEASONALITY:
+        obs_monthly = load_obs_season_monthly(os.path.join(INPUT_DIR, OBS_U5_FILE))
+        obs_clim = load_obs_season(os.path.join(INPUT_DIR, OBS_U5_FILE))
+        print("\nObserved U5 seasonal profile (Jan-Dec, mean 1):",
+              np.round(obs_clim, 2), f"| peak month {int(np.argmax(obs_clim)) + 1}")
+        seas, prof = season_scores(SIM_PFPR_CSV, obs_clim, SEL_KEYS, obs_monthly)
+        score_df = score_df.merge(seas, on=SEL_KEYS, how="left")
+        score_df["season_pass"] = season_ok(score_df)
+        score_df.to_csv(os.path.join(OUTPUT_DIR, "calibration_scores_season.csv"), index=False)
+        print("\nSeasonality ranking (best climatology r first, top 15):")
+        cols = SEL_KEYS + ["season_r", "season_r_raw", "season_lag", "season_r_years",
+                           "season_rmse", "sim_peak_month",
+                           "peak_diff_months", "amplitude_ratio", "peak_hit_frac", "ll"]
+        print(score_df.sort_values("season_r", ascending=False)[cols].head(15)
+              .to_string(index=False, float_format=lambda v: f"{v:.3g}"))
 
-    best = score_df.loc[score_df["ll"].idxmax()]
+    print(f"\nMean run-level log-likelihood by {SEL_KEYS} (best first, top 20):")
+    print(score_df.head(20).to_string(index=False))
+
+    best = pick_best(score_df)
+
+    if USE_SEASONALITY:
+        report_best_habitat(score_df, best)
 
     print("\nBEST-FITTING xTLH")
     print(f"  xTLH: {best[XCOL]:.4g}")
+    for var in SEL_KEYS[1:]:
+        print(f"  {var}: {best[var]:.4g}")
     print(f"  Mean log-likelihood: {best['ll']:.4f}")
     print(f"  Complete runs contributing: {int(best['n_runs'])}")
+    if "season_r" in best.index:
+        print(f"  Lag adjustment: simulated profile moved {int(best['season_lag'])} month(s) "
+              f"earlier (unshifted r = {best['season_r_raw']:.2f})")
+        print(f"  U5 seasonality: r = {best['season_r']:.2f} (year-by-year "
+              f"{best['season_r_years']:.2f}), RMSE {best['season_rmse']:.2f}, peak month "
+              f"{int(best['sim_peak_month'])} (diff {int(best['peak_diff_months']):+d}), "
+              f"amplitude ratio {best['amplitude_ratio']:.2f}, "
+              f"peak right in {best['peak_hit_frac']:.0%} of years")
 
     # Best combination of the other habitat parameters at the best xTLH
     # (mean log-likelihood over seeds).
     param_df = score_parameter_sets(run_scores)
-    at_best = param_df[np.isclose(param_df[XCOL], best[XCOL])]
+    at_best = param_df[np.all([np.isclose(param_df[k], best[k]) for k in SEL_KEYS], axis=0)]
     best_combo = at_best.iloc[0]
 
     print("\nBEST-FITTING COMBINATION (at the best xTLH, mean over seeds)")
@@ -710,6 +1128,16 @@ def main():
         os.path.join(OUTPUT_DIR, "calibration_scores_param_sets.csv"),
         index=False
     )
+
+    if prof is not None:
+        plot_season(prof, obs_clim, best, SEL_KEYS,
+                    os.path.join(OUTPUT_DIR, "selection_U5_seasonality.png"), score_df)
+
+    if PLOT_ONLY_SEASONALITY:
+        return
+
+    if all(v in SEL_KEYS for v in IRS_VARS):
+        plot_irs_grid(score_df, os.path.join(OUTPUT_DIR, "selection_IRS_grid.png"))
 
     plot_xtlh(
         sim_df,

@@ -43,107 +43,102 @@ it builds the whole campaign and fails loudly if an emodpy argument is missing)
     SMC     : one scheduled distribution per CSV row (= one round)
     IPTp    : Pregnant -> +16 wk -> IPTp_Visit_<yr> -> dose 1 if still IsPregnant,
               dose k after dose k-1 + 30 d (cumulative coverage -> conditional)
-    Vaccine : RTSSVaccine (raw campaign class). Long-format CSV (one row per
+    Vaccine : RTSSVaccine (raw campaign class). CSV long or wide (one row per
               year x dose, cumulative coverage). Births -> D1 at target age ->
               D2 ... chained by actual receipt of the previous dose.
 """
 
-import argparse
-import inspect
-import json
-import os
-import pathlib
-import re
-import sys
-from functools import partial
-from itertools import product
-
-import numpy as np
-import pandas as pd
-
-##### idmtools ###############################################################
-from idmtools.builders import SimulationBuilder
-from idmtools.core import ItemType
-from idmtools.core.platform_factory import Platform
-from idmtools.entities.experiment import Experiment
-##### emodpy / emod_api ######################################################
-from emodpy.emod_task import EMODTask
-import emod_api.campaign as camp
-import emod_api.interventions.common as common
-import emod_api.demographics.PreDefinedDistributions as Distributions
-from emod_api.demographics.DemographicsTemplates import CrudeRate, YearlyRate
-##### emodpy-malaria #########################################################
-import emodpy_malaria.malaria_config as conf
-import emodpy_malaria.demographics.MalariaDemographics as Demographics
-from emodpy_malaria.interventions.scale_larval_habitats import add_scale_larval_habitats
-from emodpy_malaria.interventions.treatment_seeking import add_treatment_seeking
+#########################################################################################
+# Import Modules ########################################################################
+#########################################################################################
+import argparse                                                                         #
+import inspect                                                                          #
+import json                                                                             #
+import os                                                                               #
+import pathlib                                                                          #
+import re                                                                               #
+from functools import partial                                                           #
+from itertools import product                                                           #
+import numpy as np                                                                      #
+import pandas as pd                                                                     #
+##### idmtools ##########################################################################
+from idmtools.builders import SimulationBuilder                                         #
+from idmtools.core import ItemType                                                      #
+from idmtools.core.platform_factory import Platform                                     #
+from idmtools.entities.experiment import Experiment                                     #
+##### emodpy / emod_api #################################################################
+from emodpy.emod_task import EMODTask                                                   #
+import emod_api.campaign as camp                                                        #
+import emod_api.interventions.common as common                                          #
+import emod_api.demographics.PreDefinedDistributions as Distributions                   #
+from emod_api.demographics.DemographicsTemplates import CrudeRate, YearlyRate           #
+##### emodpy-malaria ####################################################################
+import emodpy_malaria.malaria_config as conf                                            #
+import emodpy_malaria.demographics.MalariaDemographics as Demographics                  #
+from emodpy_malaria.interventions.scale_larval_habitats import add_scale_larval_habitats#
+from emodpy_malaria.interventions.treatment_seeking import add_treatment_seeking        #
 from emodpy_malaria.reporters.builtin import add_malaria_summary_report, add_event_recorder
-from emodpy_malaria.weather import weather_to_csv, csv_to_weather, WeatherVariable
-
-try:
-    from emodpy_malaria.interventions.usage_dependent_bednet import (
-        add_scheduled_usage_dependent_bednet, add_triggered_usage_dependent_bednet)
-except ImportError:
-    add_scheduled_usage_dependent_bednet = add_triggered_usage_dependent_bednet = None
-try:
-    from emodpy_malaria.interventions.drug_campaign import add_drug_campaign
-except ImportError:
-    add_drug_campaign = None
-
-import emod_malaria.bootstrap as dtk
-from get_climate import get_climate
-import manifest
-
-
-#############################################################################
-# OPTIONS
-#############################################################################
-
-STEP = "pickup"        # 'setup_climate' | 'burnin' | 'test_birth' | 'pickup'
-
-SITE_NAME = "UpperWest_Region"
-NODE_ID = 1
-MEMORY_LIMIT = 10000
-
-PROJECT_DIR = "/shared/home/grace/Final-Project-UWR"
-INPUT_DIR = os.path.join(PROJECT_DIR, "inputs")
-VECTOR_FILE = "vector.csv"
-DEMOGRAPHICS_FILE = "demographics.csv"
-
-EXPERIMENT_NAME_BURNIN = "Burnin50yrs_Final"    # was Burnin50yrs_xTLHfine (constant-dominated habitat)
-EXPERIMENT_NAME_PICKUP = "Pickup13yrs_Final"    # was Pickup13yrs_xTLHfine
-
-BURNIN_EXPERIMENT_ID = "d5315fd6-9c0f-4044-a971-c16766245dc0"  # Burnin50yrs_season (was babf0223-4568-48b6-83c2-c06494d96244 Burnin50yrs_xTLHfine)  # <- burn-in experiment the pickup reads states from
-BURNIN_FILTER = {}             # optional {tag: value} filter on burn-in sims
-
-SELECTED_PLATFORM = "SLURM_LOCAL"
+from emodpy_malaria.weather import weather_to_csv, csv_to_weather, WeatherVariable      #
+try:                                                                                    #
+    from emodpy_malaria.interventions.usage_dependent_bednet import (                   #
+        add_scheduled_usage_dependent_bednet, add_triggered_usage_dependent_bednet)     #
+except ImportError:                                                                     #
+    add_scheduled_usage_dependent_bednet = add_triggered_usage_dependent_bednet = None  #
+try:                                                                                    #
+    from emodpy_malaria.interventions.drug_campaign import add_drug_campaign           #
+except ImportError:                                                                     #
+    add_drug_campaign = None                                                            #
+##### local modules #####################################################################
+import emod_malaria.bootstrap as dtk                                                    #
+from get_climate import get_climate                                                     #
+import manifest                                                                         #
 
 
-#############################################################################
-# CALENDAR (flat 365-day years, no leap days)
-#############################################################################
-
-DAYS_PER_YEAR = 365
-DAYS_PER_MONTH = DAYS_PER_YEAR / 12.0
-
-BURNIN_START_YEAR = 1963
-BURNIN_END_YEAR = 2012
-BURNIN_DAYS = (BURNIN_END_YEAR - BURNIN_START_YEAR + 1) * DAYS_PER_YEAR      # 18,250
-
-PICKUP_START_YEAR = 2013
-PICKUP_END_YEAR = 2025
-PICKUP_DAYS = (PICKUP_END_YEAR - PICKUP_START_YEAR + 1) * DAYS_PER_YEAR      # 4,745
-
-PHASE_DAYS = {"burnin": BURNIN_DAYS, "pickup": PICKUP_DAYS}
-
-MONTH_OFFSET = np.cumsum([0, 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30])
-MONTH_NAMES = ["jan", "feb", "mar", "apr", "may", "jun",
-               "jul", "aug", "sep", "oct", "nov", "dec"]
-MONTH_DAYS = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
-MID_YEAR_DOY = 183
+#########################################################################################
+# OPTIONS ###############################################################################
+#########################################################################################
+STEP = "pickup"                 # 'setup_climate' | 'burnin' | 'test_birth' | 'pickup' #
+SELECTED_PLATFORM = "SLURM_LOCAL"                                                       #
+MEMORY_LIMIT = 10000            # MB, EMOD config limit                                 #
+##### Site ##############################################################################
+SITE_NAME = "UpperWest_Region"                                                          #
+NODE_ID = 1                                                                             #
+PROJECT_DIR = "/shared/home/grace/Final-Project-UWR"                                    #
+INPUT_DIR = os.path.join(PROJECT_DIR, "inputs")                                         #
+VECTOR_FILE = "vector.csv"                                                              # Species fractions, habitat, behaviour
+DEMOGRAPHICS_FILE = "demographics.csv"                                                  # One row: node_id, pop, lat, lon
+##### Experiments #######################################################################
+EXPERIMENT_NAME_BURNIN = "50yrs_Burnin_Final"                                          # habitat types, round-3 grid, xTLH 37.4; was 50yrs_Burnin_Spline (1f02732d, only 6/135 ran)
+EXPERIMENT_NAME_PICKUP = "Pickup13yrs_Final"                                          # round-4 grid pickup on 50yrs_Burnin_Scenario (was Pickup13yrs_Decay on 50yrs_Burnin_Season)
+BURNIN_EXPERIMENT_ID = "8eb128be-cf3c-42c0-9638-8ea642d41eba"  # 50yrs_Burnin_Final (const 0.25, rain 45, veg 0.5, xTLH 37.4, 10 seeds; submitted 2026-11-16). Round 2 was 8694a259-83a4-42c8-a999-2159a474b9e8
+BURNIN_FILTER = {}                                                                      # Burn-in states kept by the pickup ({} = all); scalar or list per tag
+                                                                                        # was round-2 mix {"scale_constant": 0.25, "scale_temp_rain": [14.0, 20.0], "scale_water_veg": 0.5}
 
 
-def month_number(value):
+#########################################################################################
+# CALENDAR (flat 365-day years, no leap days) ###########################################
+#########################################################################################
+DAYS_PER_YEAR = 365                                                                     #
+DAYS_PER_MONTH = DAYS_PER_YEAR / 12.0                                                   #
+
+BURNIN_START_YEAR = 1963                                                                #
+BURNIN_END_YEAR = 2012                                                                  #
+BURNIN_DAYS = (BURNIN_END_YEAR - BURNIN_START_YEAR + 1) * DAYS_PER_YEAR                 # 18,250
+
+PICKUP_START_YEAR = 2013                                                                #
+PICKUP_END_YEAR = 2025                                                                  #
+PICKUP_DAYS = (PICKUP_END_YEAR - PICKUP_START_YEAR + 1) * DAYS_PER_YEAR                 # 4,745
+
+PHASE_DAYS = {"burnin": BURNIN_DAYS, "pickup": PICKUP_DAYS}                             #
+
+MONTH_OFFSET = np.cumsum([0, 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30])               #
+MONTH_NAMES = ["jan", "feb", "mar", "apr", "may", "jun",                                #
+               "jul", "aug", "sep", "oct", "nov", "dec"]                                #
+MONTH_DAYS = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]                           #
+MID_YEAR_DOY = 183                                                                      #
+
+
+def month_number(value):                                                                # month name or number -> 1..12
     text = str(value).strip().lower()
     if text.replace(".", "").isdigit():
         return int(float(text))
@@ -152,11 +147,11 @@ def month_number(value):
     raise ValueError(f"Unrecognised month '{value}'.")
 
 
-def month_of_doy(doy):
+def month_of_doy(doy):                                                                  # day of year -> month 1..12
     return int(np.searchsorted(MONTH_OFFSET, int(doy) - 1, side="right"))
 
 
-def fmt_day(pickup_day):
+def fmt_day(pickup_day):                                                                # pickup day -> 'YYYY-MM-DD'
     day = int(pickup_day)
     year = PICKUP_START_YEAR + (day - 1) // DAYS_PER_YEAR
     doy = (day - 1) % DAYS_PER_YEAR + 1
@@ -164,23 +159,23 @@ def fmt_day(pickup_day):
     return f"{year}-{month:02d}-{doy - MONTH_OFFSET[month - 1]:02d}"
 
 
-def doy_of_day(day):
+def doy_of_day(day):                                                                    # simulation day -> day of year
     return (int(day) - 1) % DAYS_PER_YEAR + 1
 
 
-def month_mid_doy(month):
+def month_mid_doy(month):                                                               # mid-month day of year
     m = month_number(month)
     return float(MONTH_OFFSET[m - 1]) + (MONTH_DAYS[m - 1] + 1) / 2.0
 
 
-#############################################################################
-# CLIMATE
-#############################################################################
-
-CLIMATE_TAG = "upper_west_region"
-CLIMATE_ROOT = os.path.join(INPUT_DIR, "upper_west", "climate")
-SITE_FILE_FOR_WEATHER = os.path.join(CLIMATE_ROOT, "uwr_weather_site.csv")
-
+#########################################################################################
+# CLIMATE ###############################################################################
+#########################################################################################
+CLIMATE_TAG = "upper_west_region"                                                       #
+CLIMATE_ROOT = os.path.join(INPUT_DIR, "upper_west", "climate")                         #
+SITE_FILE_FOR_WEATHER = os.path.join(CLIMATE_ROOT, "uwr_weather_site.csv")              #
+DEMOG_IDREF = "Gridded world grump2.5arcmin"                                            # Must equal demographics IdReference
+##### Periods ###########################################################################
 # real_days = downloaded days after leap days are dropped
 # file_days = days in the file EMOD reads (real_days + filled years)
 CLIMATE_PERIODS = {
@@ -197,28 +192,30 @@ CLIMATE_PERIODS = {
         real_days=4015, file_days=4745,                  # 2024-2025 filled
     ),
 }
+##### Adjustments #######################################################################
+# Same temperature OFFSET in both phases (not the same target).
+#   Raw mean air (leap days dropped): burn-in 27.606 C, pickup 27.987 C (+0.38 real)
+#   Burn-in offset: 28.95 - 27.606 = +1.344 C  ->  pickup target 27.987 + 1.344 = 29.33 C
+# Assumption: the burn-in offset is the correct bias correction for this weather product
+# and the bias does not change between periods.
+TARGET_MEAN_TEMPERATURE = {"burnin": 28.95, "pickup": 29.33}                            # None = no shift
+RAIN_SHIFT = None                                                                       #
+DROP_LEAP_DAYS = True                                                                   #
+RAW_KEYS = {"air": "air_temperature", "land": "land_temperature",                       #
+            "rain": "rainfall", "hum": "relative_humidity"}                             #
 
-TARGET_MEAN_TEMPERATURE = {"burnin": 28.95, "pickup": 30.60}   # None = no shift
-RAIN_SHIFT = None
-DROP_LEAP_DAYS = True
 
-DEMOG_IDREF = "Gridded world grump2.5arcmin"   # must equal demographics IdReference
-
-RAW_KEYS = {"air": "air_temperature", "land": "land_temperature",
-            "rain": "rainfall", "hum": "relative_humidity"}
-
-
-def fill_years(phase):
+def fill_years(phase):                                                                  # years repeated to fill the file
     p = CLIMATE_PERIODS[phase]
     return (p["file_days"] - p["real_days"]) // DAYS_PER_YEAR
 
 
-def filled_calendar_years(phase):
+def filled_calendar_years(phase):                                                       # calendar years that are filled
     last_real = int(CLIMATE_PERIODS[phase]["weather_end"])
     return [last_real + k for k in range(1, fill_years(phase) + 1)]
 
 
-def check_calendar():
+def check_calendar():                                                                   # fail early on calendar mismatches
     b, p = CLIMATE_PERIODS["burnin"], CLIMATE_PERIODS["pickup"]
     if b["sim_days"] != BURNIN_DAYS:
         raise ValueError("burnin sim_days != BURNIN_DAYS")
@@ -236,7 +233,7 @@ def check_calendar():
         raise ValueError("pickup weather file must cover every pickup day exactly.")
 
 
-def climate_specs(phase):
+def climate_specs(phase):                                                               # suffix for the output folder name
     parts = []
     if DROP_LEAP_DAYS:
         parts.append("noleap")
@@ -270,8 +267,7 @@ def climate_folder(phase):
     return os.path.join(base, specs) if specs else base
 
 
-def write_weather_site_file():
-    """get_climate() needs name, lat, lon, nodes; build that from demographics.csv."""
+def write_weather_site_file():                                                          # get_climate() needs name, lat, lon, nodes
     site = _read_site_definition()
     os.makedirs(CLIMATE_ROOT, exist_ok=True)
     pd.DataFrame([{"name": SITE_NAME, "lat": site["lat"], "lon": site["lon"],
@@ -404,7 +400,7 @@ def validate_climate(phase):
     return folder
 
 
-def setup_climate():
+def setup_climate():                                                                    # --step setup_climate
     check_calendar()
     site_file = write_weather_site_file()
     for phase, p in CLIMATE_PERIODS.items():
@@ -423,82 +419,98 @@ def setup_climate():
         print(f"  OK: {climate_folder(phase)}")
 
 
-#############################################################################
-# DEMOGRAPHIC / VECTOR SETTINGS  --  MUST EQUAL IN BURN-IN AND PICKUP
-#############################################################################
-
-BIRTH_RATE_DEPENDENCE = "INDIVIDUAL_PREGNANCIES"
+#########################################################################################
+# DEMOGRAPHICS / VECTORS -- MUST EQUAL IN BURN-IN AND PICKUP ############################
+#########################################################################################
+BIRTH_RATE_DEPENDENCE = "INDIVIDUAL_PREGNANCIES"                                        #
 CRUDE_DEATH_RATE = 10.9                  # per 1,000 per year (2010 GSS rural Upper West)
 PREG_RATE_PER_MOTHER_DAY = 3.62e-4       # per possible mother per day (target 23.1 births/1000/yr)
-X_BIRTH = 1.0
-MAX_PREG_RATE_PER_MOTHER_DAY = 1.0 / 280.0
-STALE_CONFIG_PARAMS = ("Disable_IP_Whitelist",)
-
-APPLY_VECTOR_BEHAVIOUR = True
-
-TEST_YEARS = 30
-TEST_SEEDS = 3
-X_BIRTH_TEST = [0.8, 0.9, 1.0, 1.1, 1.2]
-
-# --step test_season: short burn-ins to check WHEN cases peak for a wide habitat
-# grid, before committing to the full 50-year burn-in. Vector/case seasonality
-# settles within a few years; the level (PfPR) does not, so only the timing is
-# read from this test (check_season_test.py). 1.0/x/x = the old constant-dominated mix.
-SEASON_TEST_YEARS = 10
-SEASON_TEST_CONSTANT = [0.0, 0.05, 0.2, 1.0]
-SEASON_TEST_TEMP_RAIN = [2.0, 6.0]
-SEASON_TEST_WATER_VEG = [0.5, 1.5]
-SEASON_TEST_XTLH = [60.0, 150.0]
+X_BIRTH = 1.0                                                                           #
+MAX_PREG_RATE_PER_MOTHER_DAY = 1.0 / 280.0                                              #
+STALE_CONFIG_PARAMS = ("Disable_IP_Whitelist",)                                         #
+APPLY_VECTOR_BEHAVIOUR = True                                                           #
+##### Birth-rate test (--step test_birth) ###############################################
+TEST_YEARS = 30                                                                         #
+TEST_SEEDS = 3                                                                          #
+X_BIRTH_TEST = [0.8, 0.9, 1.0, 1.1, 1.2]                                                #
 
 
-#############################################################################
-# HABITAT GRID  (burn-in sweeps it; pickup inherits it from the burn-in tags)
-#############################################################################
-
-# Seasonality fix: with SCALE_CONSTANT = 1.0 the constant habitat dominated, so
-# vectors peaked in the hot dry season (Feb-Apr) and simulated U5 incidence was
-# anti-correlated (r = -0.82) with monthly_U5_conf.csv (observed peak Jun-Nov).
-# Shift weight to the rain-driven habitats. Less total habitat -> higher xTLH.
-# Previous grid: CONSTANT [1.0], TEMP_RAIN [0.5, 1.0, 2.5], WATER_VEG [0.0, 0.1, 0.5],
-#                XTLH logspace(30, 65, 8) -> best xTLH 41.8.
-# Season test (a92fb85b, 10-yr burn-ins): r with observed U5 timing was 0.73-0.75
-# (peak Oct) for constant 0 / water_veg 0.5; constant >= 0.2 or water_veg 1.5 pushed
-# the peak to Dec (r <= 0.15). The pickup climate (meanT 30.6) is hotter than the
-# burn-in (28.95), which makes any constant habitat breed in the dry season.
-#SCALE_CONSTANT = [0.0, 0.02]
-#SCALE_TEMP_RAIN = [2.0, 6.0]
-#SCALE_WATER_VEG = [0.25, 0.5]
-
-
-SCALE_CONSTANT = [1.0]
-SCALE_TEMP_RAIN = [1.0]
+#########################################################################################
+# HABITAT GRID (burn-in sweeps it; pickup inherits it from the burn-in tags) ############
+#########################################################################################
+# Constant habitat 0: with constant 1.0 (Burnin50yrs_FinalIRS) dry-season breeding at
+# 32-33 C made pre-IRS U5 cases peak in Apr-May; with constant 0 (season3) they peaked
+# Oct-Nov like the observed routine data (peak Oct). More temp_rain / less water_veg moves
+# the peak earlier (water_veg 1.5 pushed it to Dec). Habitat weight sits in temp_rain,
+# so transmission is set by the product xTLH x temp_rain (here 300-1100).
+##  PARAMETER SPACE
+# Restored to the Pickup13yrs_xTLHfine grid (burn-in babf0223, best xTLH 41.8, LL -3.17),
+# whose 2013-2015 start matched DHS 2014 with moderate seasonal swings. The constant-0
+# grid below (Burnin50yrs_IRScal) gave 2013-15 swings 0.1-0.75.
+#   SCALE_CONSTANT = [0.0]; SCALE_TEMP_RAIN = [10.0, 14.0, 20.0]; SCALE_WATER_VEG = [0.1, 0.5]
+#   XTLH_RANGE = list(np.linspace(30, 55, 6))
+#
+# SEASONALITY SWEEP (xTLH fixed at the calibrated 37.4).
+# Target: observed U5 incidence (inputs/monthly_U5_conf.csv, 2015-2025) is lowest in
+# April (~22/1000), rises from June and peaks in October (~60/1000; Nov ~53), i.e. a
+# peak/trough ratio ~2.7 with a substantial dry-season floor.
+# Previous grid (constant 1.0, temp_rain 0.5-2.5, water_veg 0-0.5; Pickup13yrs_SMCfix):
+# EVERY combination peaked in April (peak diff -6 mo, season r ~ -0.80, amplitude ~1.9x
+# observed) -> the constant habitat dominates and breeds in the hot dry season.
+# So: constant is cut to a small dry-season floor, temp_rain carries the habitat
+# weight (xTLH x temp_rain = 37.4 x 8-20 = 300-750, the range the constant-0 grid
+# needed), water_veg extends transmission into Oct-Nov (1.5 pushed the peak to Dec).
+# Changing the mix changes overall intensity: re-check prevalence LL for the selected
+# mix and, if needed, re-tune xTLH around 37.4 for that mix only.
+#   Previous: SCALE_CONSTANT = [1.0]; SCALE_TEMP_RAIN = [0.5, 1.0, 2.5]; SCALE_WATER_VEG = [0.0, 0.1, 0.5]
+#   Round 2 (50yrs_Burnin_Season / Pickup13yrs_Season): constant [0, 0.1, 0.25, 0.5],
+#   temp_rain [8, 14, 20], water_veg [0.1, 0.5, 1.0]. Pre-IRS 2013-14 seasonality was
+#   good (r up to 0.76, peak Nov; best const 0.5 / rain 20 / veg 0.1, r rising with
+#   temp_rain) but 2015-25 peaked Jan (r < 0): IRS from April delays transmission.
+# Round 3: push temp_rain higher around the best pre-IRS mix.
+#   Previous round 3: SCALE_CONSTANT [0.25, 0.5, 0.75]; SCALE_TEMP_RAIN [20, 30, 45]; SCALE_WATER_VEG [0.1, 0.5]
+# Round 4 target: observed 2015-25 U5 (relative to year mean) trough Apr ~0.5, first peak
+# Jul ~1.3, dip Aug ~1.0 (SMC round 1), main peak Oct ~1.6. Needs a FAST rain response:
+# low constant (dry-season floor only; 1.0 gave an Apr peak), more temp_rain, little
+# water_veg (~100-day memory pushes the peak into Dec-Jan).
+SCALE_CONSTANT = [ 0.25]
+SCALE_TEMP_RAIN = [ 45.0]
 SCALE_WATER_VEG = [0.5]
-XTLH_RANGE = [41.78613043183054]
-#XTLH_RANGE = list(np.logspace(np.log10(30), np.log10(400), 8))  # 8 x 8 habitat x 5 seeds = 320 sims
-NUM_SEEDS = 30
+XTLH_RANGE = [37.4]
+
+#SCALE_TEMP_RAIN = [30.0, 45.0, 60.0]
+#SCALE_WATER_VEG = [0.0, 0.1]
+
+#XTLH_RANGE = list(np.logspace(np.log10(30), np.log10(65), 8))                           # 30, 33.5, 37.4, 41.8, 46.7, 52.1, 58.2, 65 (as Pickup13yrs_SMCfix)
+#XTLH_RANGE = list(np.logspace(np.log10(8), np.log10(25), 5))                             # 8, 10.6, 14.1, 18.8, 25 -> xTLH x temp_rain(30-60) ~ 240-1500
+NUM_SEEDS = 10                                                                          # 1 xTLH x 1 habitat x 10 seeds = 10 burn-in sims
+
+##### Habitat ###########################################################################
+# CONSTANT + TEMPORARY_RAINFALL + WATER_VEGETATION, mixed by the SCALE_* grid above.
+HABITAT_BASE_CAPACITY = 1e7
 HABITAT_TAGS = ["scale_constant", "scale_temp_rain", "scale_water_veg"]
+_hab_grid = product(SCALE_CONSTANT, SCALE_TEMP_RAIN, SCALE_WATER_VEG)
+_DEFAULT_MIX = (1.0, 1.0, 1.0)
 
-habitat_df = pd.DataFrame(list(product(SCALE_CONSTANT, SCALE_TEMP_RAIN, SCALE_WATER_VEG)),
-                          columns=HABITAT_TAGS)
-N_HABS = len(habitat_df)
-EXPECTED_SIMULATIONS = len(XTLH_RANGE) * N_HABS * NUM_SEEDS
+habitat_df = pd.DataFrame(list(_hab_grid), columns=HABITAT_TAGS)                        #
+N_HABS = len(habitat_df)                                                                #
+EXPECTED_SIMULATIONS = len(XTLH_RANGE) * N_HABS * NUM_SEEDS                             #
 
 
-#############################################################################
-# INTERVENTION INPUT FILES  (a missing file is skipped -- check the names!)
-#############################################################################
-
-CM_FILE = "intervention_CMBN.csv"
-ITN_ANC = "interventions_ITN_ANC.csv"
-ITN_CWC = "interventions_ITN_CWC.csv"
-IRS_FILE = "intervention_IRS.csv"
-SMC_FILE = "intervention_SMC.csv"
-IPTP_FILE = "interventions_IPTp.csv"
-VACCINE_FILE = "intervention_malariaVaccine_wide.csv"    # wide or long both accepted
-ITN_FILE = None                          # mass ITN campaigns disabled
-USE_ITN_USAGE_CURVES = True
-ITN_AGE_FILE = "interventions_ITN_age.csv"
-ITN_SEASON_FILE = "interventions_ITN_season.csv"
+#########################################################################################
+# INTERVENTION INPUT FILES (a missing file is skipped -- check the names!) ##############
+#########################################################################################
+CM_FILE = "intervention_CMBN.csv"                                                       # Case management
+ITN_ANC = "interventions_ITN_ANC.csv"                                                   # ITN via antenatal care
+ITN_CWC = "interventions_ITN_CWC.csv"                                                   # ITN via child welfare clinic
+IRS_FILE = "intervention_IRS.csv"                                                       #
+SMC_FILE = "intervention_SMC.csv"                                                       #
+IPTP_FILE = "interventions_IPTp.csv"                                                    #
+VACCINE_FILE = "intervention_malariaVaccine_wide.csv"                                   # Wide or long both accepted
+ITN_FILE = None                                                                         # Mass ITN campaigns disabled
+USE_ITN_USAGE_CURVES = True                                                             #
+ITN_AGE_FILE = "interventions_ITN_age.csv"                                              #
+ITN_SEASON_FILE = "interventions_ITN_season.csv"                                        #
 
 CM_DRUGS = {
     "AL": ["Artemether", "Lumefantrine"],
@@ -506,53 +518,59 @@ CM_DRUGS = {
     "SP": ["Sulfadoxine", "Pyrimethamine"],
     "CQ": ["Chloroquine"],
 }
-SEVERE_TRIGGERS = ["NewSevereCase"]
+SEVERE_TRIGGERS = ["NewSevereCase"]                                                     #
 
 
-#############################################################################
-# REPORT SETTINGS
-#############################################################################
+#########################################################################################
+# REPORT SETTINGS #######################################################################
+#########################################################################################
+REPORT_INTERVAL = 30                                                                    #
+REPORT_MAX_NUMBER = 13                                                                  #
+REPORT_AGE_BINS = [0.25, 0.5, 5, 15, 25, 100]                                           #
+PARASITE_DETECTION_THRESHOLD = 40                                                       #
 
-REPORT_INTERVAL = 30
-REPORT_MAX_NUMBER = 13
-REPORT_AGE_BINS = [0.25, 0.5, 5, 15, 25, 100]
-PARASITE_DETECTION_THRESHOLD = 40
+ADD_PREGNANCY_STATUS_REPORT = True                                                      #
+PREGNANCY_REPORT_INTERVAL = 15                                                          #
+PREGNANCY_AGE_BINS = [15, 50]                   # MUST EQUAL PREGNANCY_AGE_BINS in the analyzer
 
-ADD_PREGNANCY_STATUS_REPORT = True
-PREGNANCY_REPORT_INTERVAL = 15
-PREGNANCY_AGE_BINS = [15, 50]            # MUST EQUAL PREGNANCY_AGE_BINS in the analyzer
+EVENT_LIST = ["Births", "DiseaseDeaths", "NonDiseaseDeaths", "NewInfectionEvent",       #
+              "NewClinicalCase", "Received_Treatment", "Received_Severe_Treatment",     #
+              "Pregnant", "GaveBirth"]                                                  #
+BURNIN_EVENT_MIN_AGE, BURNIN_EVENT_MAX_AGE = 14, 45                                     #
+PICKUP_EVENT_MIN_AGE, PICKUP_EVENT_MAX_AGE = 0, 115                                     #
+RECORD_TRIGGER_EVENTS = True                                                            #
+TRIGGER_EVENTS = ("Pregnant", "GaveBirth", "Births")                                    #
 
-EVENT_LIST = ["Births", "DiseaseDeaths", "NonDiseaseDeaths", "NewInfectionEvent",
-              "NewClinicalCase", "Received_Treatment", "Received_Severe_Treatment",
-              "Pregnant", "GaveBirth"]
-BURNIN_EVENT_MIN_AGE, BURNIN_EVENT_MAX_AGE = 14, 45
-PICKUP_EVENT_MIN_AGE, PICKUP_EVENT_MAX_AGE = 0, 115
-RECORD_TRIGGER_EVENTS = True
-TRIGGER_EVENTS = ("Pregnant", "GaveBirth", "Births")
+WRITE_PICKUP_STATE = True                                                               #
+PICKUP_INSETCHART = True                        # output/InsetChart.json (daily, 4,745 days)
 
-WRITE_PICKUP_STATE = True
-
-# in REPORT SETTINGS
-PICKUP_INSETCHART = True        # writes output/InsetChart.json in the pickup (daily, 4,745 days)
-
-# RTS,S (EMOD RTSSVaccine). Boosted_Antibody_Concentration=1200 and cost 1.0 are the
-# values in the EMOD RTSSVaccine docs example; the boost is a calibration choice, not
-# derived from your data. Override per year with an optional `boosted_antibody` CSV column.
-# The config must also define Antibody_CSP_Killing_Threshold, Antibody_CSP_Killing_Inverse_Width
-# and Antibody_CSP_Decay_Days (set_team_defaults normally does).
-RTSS_BOOSTED_ANTIBODY = 1200
-RTSS_COST_TO_CONSUMER = 1.0
+# RTS,S: boost 1200 and cost 1.0 are the EMOD RTSSVaccine docs example values (a
+# calibration choice, not derived from data). Override per year with a `boosted_antibody`
+# CSV column. Config must define Antibody_CSP_Killing_Threshold, _Inverse_Width, _Decay_Days.
+RTSS_BOOSTED_ANTIBODY = 1200                                                            #
+RTSS_COST_TO_CONSUMER = 1.0                                                             #
 
 
-#############################################################################
-# PICKUP INTERVENTION CONSTANTS
-#############################################################################
-
-ANC_DELAY_DAYS = 16 * 7
-ANC_CHECK_PREGNANT_AT_DELIVERY = True
-CWC_AGE_MONTHS = 18
-CWC_DELAY_DAYS = int(round(CWC_AGE_MONTHS * DAYS_PER_MONTH))
-
+#########################################################################################
+# PICKUP INTERVENTION CONSTANTS #########################################################
+#########################################################################################
+ANC_DELAY_DAYS = 16 * 7                                                                 # Pregnant -> first ANC visit
+ANC_CHECK_PREGNANT_AT_DELIVERY = True                                                   #
+CWC_AGE_MONTHS = 18                                                                     #
+CWC_DELAY_DAYS = int(round(CWC_AGE_MONTHS * DAYS_PER_MONTH))                            #
+##### IRS ###############################################################################
+# IRS values in intervention_IRS.csv are provisional assumptions, not measured Ghanaian
+# EMOD parameters. Fixed per insecticide at NMEP operational coverage (no sweep).
+#   Pirimiphos-methyl CS (Actellic 300CS)  decay 120 d
+#   Clothianidin (SumiShield 50WG)         decay 180 d
+#   Broflanilide (VECTRON T500)            decay 240 d
+#   killing_initial_effect: PM 0.75, CL 0.70, BF 0.65 (hut-trial mortality, wild An. gambiae s.l.)
+#   killing_box_duration 30 d (full residual efficacy before decay; CALIBRATION ASSUMPTION,
+#     reduced from 60 d after the best xTLH fell below 60). Repelling 0 (non-repellent chemistries).
+#   repetitions 1 / gap 365: one row per annual round; >1 would double-spray with the next row.
+# indoor_feeding (vector.csv) sets the share of human feeds exposed to IRS and ITNs:
+# 0.7 for An. gambiae (between the indoor exposure share 0.79-1.00 and the ~51% indoor
+# biting from Ghanaian landing catches; ASSUMPTION), funestus 0.86, arabiensis 0.5.
 IRS_PARAM_COLUMNS = {
     "killing_initial_effect": "killing_initial_effect",
     "killing_box_duration": "killing_box_duration",
@@ -561,58 +579,77 @@ IRS_PARAM_COLUMNS = {
     "repelling_box_duration": "repelling_box_duration",
     "repelling_decay_time_constant": "repelling_decay_time_constant",
 }
-IRS_COST_TO_CONSUMER = 8                 # EMOD IRSHousingModification default
-# Insecticide_Name is only valid if the config defines insecticides with these names
-# (Pirimiphos-methyl, Clothianidin). Leave False unless you configured them.
-IRS_PASS_INSECTICIDE_NAME = False
-
-SMC_DRUG_ALIASES = {"SPAQ": "SPA", "SP+AQ": "SPA", "SP-AQ": "SPA"}
-SMC_NONCSV_DEFAULTS = dict(age_min=0.25, age_max=5.0, drug_code="SPA")
-
-IPTP_DEFAULTS = dict(drug_code="SP", delay_days=ANC_DELAY_DAYS, gap_days=30)
-IPTP_COLUMN_RE = re.compile(r"^iptp(\d+)_coverage$")
-# iptp<k>_coverage = % of women who got dose k (of those eligible).
-#   "nested"     : doses nested (dose k only after dose k-1); conditional uptake = cov_k / cov_k-1,
-#                  capped at 1 when the data rise with dose (that year's dose k is then
-#                  limited to the previous dose's coverage).
-#   "independent": every dose is delivered at coverage cov_k to women still pregnant at that
-#                  step, whether or not they got the previous dose; reproduces each reported
-#                  % exactly but ignores nesting (fewer women complete all doses).
-IPTP_DOSE_MODEL = "nested"
-
-# Vaccine CSV, long (dose, year, target_age_months, coverage) or wide (year, d<k>_coverage,
+# IRS calibration sweep (pickup only; burn-in has no IRS). Every row of intervention_IRS.csv
+# is scaled the same way:
+#   killing_initial_effect      x irs_kill_scale   (capped at 1)
+#   killing_decay_time_constant x irs_decay_scale  (residual life; box duration unchanged)
+#   coverage                    x irs_coverage_scale, capped at IRS_COVERAGE_CAP
+# Scale 1.0 reproduces the CSV. The CSV values made post-IRS PfPR fall far below DHS
+# and suppressed the whole rainy season (simulated peak moved to Mar-Apr), so the grid
+# mainly explores weaker IRS.
+# IRS_SWEEP = {}: no sweep, IRS exactly as in intervention_IRS.csv, no IRS tags.
+# Example sweep: {"irs_kill_scale": [0.5, 0.75, 1.0], "irs_decay_scale": [0.5, 1.0],
+#                 "irs_coverage_scale": [0.8, 1.2]}
+# Pickup13yrs_IRSsweep (kill x 0.4/0.55/0.7, decay x 0.5/1.0, reported coverage) chose
+# kill x 0.4, decay x 1.0 (LL -3.44 at xTLH 45). That result is now written into
+# intervention_IRS.csv (kill PM 0.30, CL 0.28, BF 0.26; original kept in
+# intervention_IRS.csv.pre_sweep_backup), with 2024-2025 coverage raised to 0.90 and
+# the 2026 scenario row repeating 2025. Final runs use the CSV as-is: no sweep.
+IRS_SWEEP = {}
+IRS_COVERAGE_CAP = 0.90                         # used only when irs_coverage_scale is swept
+# HABITAT DECAY SWEEP (pickup only). Config parameters, not part of the serialized
+# state, so they can be swept on an existing burn-in; vectors re-equilibrate within
+# the first pickup year. Diagnosis (Pickup13yrs_Season, season_lag_chain.png): rain
+# peaks Aug but adult vectors peak Oct (2 mo late) and EIR Nov, so cases/PfPR peak
+# Dec-Jan vs observed Jul-Oct. Faster habitat drying should cut the Oct-Dec tail.
+#   Temporary_Habitat_Decay_Factor   (TEMPORARY_RAINFALL; EMOD default 0.05)
+#   Semipermanent_Habitat_Decay_Rate (WATER_VEGETATION, per day; default 0.01 = ~100-day memory)
+# Each key is written as a config parameter AND a simulation tag of the same name.
+# {} = no sweep (EMOD defaults).
+PICKUP_CONFIG_SWEEP = {}                        # EMOD defaults 0.05 / 0.01 = burn-in values (scenario script uses defaults too)
+#   Diagnostic sweep (Pickup13yrs_Final 4c4927da, cancelled 2026-11-16):
+#   {"Temporary_Habitat_Decay_Factor": [0.05, 0.15, 0.4], "Semipermanent_Habitat_Decay_Rate": [0.01, 0.03, 0.1]}
+PICKUP_SEEDS = None                             # burn-in seeds (Run_Number < this) used by the pickup; None = all
+IRS_COST_TO_CONSUMER = 8                        # EMOD IRSHousingModification default
+IRS_PASS_INSECTICIDE_NAME = False               # True only if the config defines the insecticides
+##### SMC ###############################################################################
+SMC_DRUG_ALIASES = {"SPAQ": "SPA", "SP+AQ": "SPA", "SP-AQ": "SPA"}                      #
+SMC_NONCSV_DEFAULTS = dict(age_min=0.25, age_max=5.0, drug_code="SPA")                  #
+##### IPTp ##############################################################################
+IPTP_DEFAULTS = dict(drug_code="SP", delay_days=ANC_DELAY_DAYS, gap_days=30)            #
+IPTP_COLUMN_RE = re.compile(r"^iptp(\d+)_coverage$")                                    #
+# iptp<k>_coverage = % of women who got dose k.
+#   "nested"     : dose k only after dose k-1; uptake = cov_k / cov_k-1 (capped at 1)
+#   "independent": dose k at cov_k for women still pregnant, ignoring earlier doses
+IPTP_DOSE_MODEL = "nested"                                                              #
+##### Vaccine ###########################################################################
+# CSV long (dose, year, target_age_months, coverage) or wide (year, d<k>_coverage,
 # d<k>_age_months); coverage is CUMULATIVE by dose. Optional column: boosted_antibody.
-# ASSUMPTION: dose ages (months) used only when target_age_months is blank.
-VACCINE_DEFAULT_AGE_MONTHS = {1: 6, 2: 7, 3: 9, 4: 18}
-VACCINE_NONCSV_DEFAULTS = dict(boost=RTSS_BOOSTED_ANTIBODY)
-# ASSUMPTION: what `year` means in the vaccine CSV.
-#   "delivery": calendar year the doses are GIVEN (typical administrative coverage data)
-#   "birth"   : birth cohort year
-VACCINE_YEAR_MEANING = "delivery"
-VACCINE_ISSUES = {}
-ALLOW_EXCLUDED_VACCINE_COHORTS = False
-
-USAGE_VALUE_COLUMNS = ["age_usage", "season_usage", "usage", "value", "use",
-                       "usage_prob", "probability", "prob"]
-USAGE_AGE_COLUMNS = ["age", "age_years", "age_yr"]
-USAGE_DAY_COLUMNS = ["day_of_year", "doy", "day"]
-USAGE_SEASON_TIME_COLUMNS = ["season_time"]
-ITN_USAGE_CHANNELS = ("MASS", "ANC", "CWC")
-MAX_USAGE_AGE_YEARS = 125
-ITN_USAGE = None
-SCHEDULES = None
-CM_BURNIN = None
-CM_PICKUP = None
-
-PREG_RESTRICTION = {"Pregnancy": "IsPregnant"}
+VACCINE_DEFAULT_AGE_MONTHS = {1: 6, 2: 7, 3: 9, 4: 18}              # ASSUMPTION: used when age is blank
+VACCINE_NONCSV_DEFAULTS = dict(boost=RTSS_BOOSTED_ANTIBODY)                             #
+VACCINE_YEAR_MEANING = "delivery"                                   # ASSUMPTION: 'delivery' or 'birth'
+VACCINE_ISSUES = {}                                                                     #
+ALLOW_EXCLUDED_VACCINE_COHORTS = False                                                  #
+##### ITN usage curves ##################################################################
+USAGE_VALUE_COLUMNS = ["age_usage", "season_usage", "usage", "value", "use",            #
+                       "usage_prob", "probability", "prob"]                             #
+USAGE_AGE_COLUMNS = ["age", "age_years", "age_yr"]                                      #
+USAGE_DAY_COLUMNS = ["day_of_year", "doy", "day"]                                       #
+USAGE_SEASON_TIME_COLUMNS = ["season_time"]                                             #
+ITN_USAGE_CHANNELS = ("MASS", "ANC", "CWC")                                             #
+MAX_USAGE_AGE_YEARS = 125                                                               #
+ITN_USAGE = None                                                                        #
+SCHEDULES = None                                                                        #
+CM_BURNIN = None                                                                        #
+CM_PICKUP = None                                                                        #
+PREG_RESTRICTION = {"Pregnancy": "IsPregnant"}                                          #
 
 
-#############################################################################
-# INPUT: VECTORS AND SITE
-#############################################################################
-
-VECTOR_PATH = os.path.join(INPUT_DIR, VECTOR_FILE)
-DEMOGRAPHICS_PATH = os.path.join(INPUT_DIR, DEMOGRAPHICS_FILE)
+#########################################################################################
+# INPUT: VECTORS AND SITE ###############################################################
+#########################################################################################
+VECTOR_PATH = os.path.join(INPUT_DIR, VECTOR_FILE)                                      #
+DEMOGRAPHICS_PATH = os.path.join(INPUT_DIR, DEMOGRAPHICS_FILE)                          #
 
 
 def load_vectors():
@@ -662,10 +699,9 @@ def validate_inputs(step):
         raise ValueError("TEST_YEARS cannot exceed the burn-in length.")
 
 
-#############################################################################
-# CSV HELPERS
-#############################################################################
-
+#########################################################################################
+# CSV HELPERS ###########################################################################
+#########################################################################################
 def read_clean_csv(path):
     df = pd.read_csv(path, dtype=str, skipinitialspace=True)
     df.columns = [c.strip().lower() for c in df.columns]
@@ -770,9 +806,10 @@ def load_generic(filename, default_day_note=None):
                           filename, default_day_note=default_day_note)
 
 
-#############################################################################
-# CASE MANAGEMENT (burn-in and pickup)
-#############################################################################
+#########################################################################################
+# CASE MANAGEMENT (burn-in and pickup) -- FILE CONTINUES HERE ###########################
+#########################################################################################
+
 # Burn-in rows are collapsed multi-year blocks: `year` = first year, `duration`
 # spans all its years. Start day = (year - 1963) * 365 + 1; CSV start_day is
 # ignored. coverage x seek is folded into Demographic_Coverage.
@@ -857,9 +894,9 @@ def add_case_management(campaign, df):
                                   else "Received_Treatment"))
 
 
-#############################################################################
-# PICKUP LOADERS
-#############################################################################
+#########################################################################################
+# PICKUP LOADERS ########################################################################
+#########################################################################################
 
 def fill_itn_columns(df, label):
     df["cov"] = need(df, ["coverage", "cov_all"], label)
@@ -1071,7 +1108,9 @@ def cwc_catchup_batches(year_start_day):
     return [span] if span else []
 
 
-# ---- ITN usage curves (age x season) --------------------------------------
+#########################################################################################
+# ITN USAGE CURVES (age x season) #######################################################
+#########################################################################################
 
 def itn_usage_label():
     return "age x season curves" if USE_ITN_USAGE_CURVES else "FLAT"
@@ -1223,9 +1262,9 @@ def itn_usage(channel, year, delivery_doy):
     return usage_age_curve(channel, year), usage_season_curve(channel, year, delivery_doy)
 
 
-#############################################################################
-# EMODPY ARGUMENT RESOLUTION (emodpy-malaria argument names differ by version)
-#############################################################################
+#########################################################################################
+# EMODPY ARGUMENT RESOLUTION (emodpy-malaria argument names differ by version) ##########
+#########################################################################################
 
 def _kw(fn, spec, required=()):
     """
@@ -1263,9 +1302,9 @@ def _call_supported(fn, *args, **kwargs):
     return fn(*args, **kept)
 
 
-#############################################################################
-# RAW CAMPAIGN EVENTS (stage events, IPTp, vaccine, IRS)
-#############################################################################
+#########################################################################################
+# RAW CAMPAIGN EVENTS (stage events, IPTp, vaccine, IRS) ################################
+#########################################################################################
 # These use stable EMOD campaign classes directly so delays are CONSTANT and
 # events chain exactly. Field names that changed between EMOD versions are
 # detected from the schema file.
@@ -1367,9 +1406,9 @@ def delivery_window(year_start_day, delay_days):
     return start, last - start + 1, first < 1
 
 
-#############################################################################
-# ITN / IRS / SMC (emodpy functions for ITN and SMC; raw classes for IRS)
-#############################################################################
+#########################################################################################
+# ITN / IRS / SMC (emodpy functions for ITN and SMC; raw classes for IRS) ###############
+#########################################################################################
 
 def _itn_common(row, age, season, name, cov):
     spec = {
@@ -1491,7 +1530,9 @@ def add_mass_itn(campaign, df):
                           event="Received_ITN_MASS")
 
 
-# ---- IRS: raw IRSHousingModification --------------------------------------
+#########################################################################################
+# IRS: raw IRSHousingModification #######################################################
+#########################################################################################
 
 def _waning(initial, box, decay):
     """Waning effect from CSV columns (initial effect, box duration, decay time constant)."""
@@ -1538,6 +1579,10 @@ def add_irs(campaign, df):
             add_coordinated_event(campaign, day, row["cov"],
                                   _multi([irs, _broadcast("Received_IRS")]))
 
+
+#########################################################################################
+# SMC / IPTp ############################################################################
+#########################################################################################
 
 def add_smc(campaign, df):
     for _, row in df.iterrows():
@@ -1594,7 +1639,9 @@ def add_iptp(campaign, rows):
                                     restriction=PREG_RESTRICTION)
 
 
-# ---- RTS,S vaccine: raw RTSSVaccine ---------------------------------------
+#########################################################################################
+# RTS,S VACCINE: raw RTSSVaccine ########################################################
+#########################################################################################
 
 def _rtss(boost, name):
     return {"class": "RTSSVaccine", "Intervention_Name": name,
@@ -1636,9 +1683,9 @@ def add_vaccine(campaign, cohorts):
                                     _delayed(gap, actual), coverage=min(cond, 1.0))
 
 
-#############################################################################
-# PICKUP CAMPAIGN
-#############################################################################
+#########################################################################################
+# PICKUP CAMPAIGN #######################################################################
+#########################################################################################
 
 def load_schedules():
     cm, cm_dropped = load_case_management_pickup()
@@ -1658,7 +1705,18 @@ def load_schedules():
     return out
 
 
-def add_pickup_interventions(campaign):
+def scale_irs(df, kill=1.0, decay=1.0, cov=1.0):
+    """IRS schedule scaled by one IRS_SWEEP setting (see IRS_SWEEP)."""
+    if not has_rows(df):
+        return df
+    df = df.copy()
+    df["killing_initial_effect"] = (df["killing_initial_effect"] * kill).clip(upper=1.0)
+    df["killing_decay_time_constant"] = df["killing_decay_time_constant"] * decay
+    df["cov"] = (df["cov"] * cov).clip(upper=IRS_COVERAGE_CAP)
+    return df
+
+
+def add_pickup_interventions(campaign, irs=None):
     s = SCHEDULES
     if has_rows(s["anc"]):
         add_routine_anc(campaign, s["anc"])
@@ -1667,7 +1725,7 @@ def add_pickup_interventions(campaign):
     if has_rows(s["mass"]):
         add_mass_itn(campaign, s["mass"])
     if has_rows(s["irs"]):
-        add_irs(campaign, s["irs"])
+        add_irs(campaign, scale_irs(s["irs"], **irs) if irs else s["irs"])
     if has_rows(s["smc"]):
         add_smc(campaign, s["smc"])
     if s["iptp"]:
@@ -1716,9 +1774,9 @@ def register_custom_events(config, names):
     config.parameters["Custom_Individual_Events"] = sorted(set(current) | set(names))
 
 
-#############################################################################
-# CONFIG / DEMOGRAPHICS / CAMPAIGNS
-#############################################################################
+#########################################################################################
+# CONFIG / DEMOGRAPHICS / CAMPAIGNS #####################################################
+#########################################################################################
 
 def remove_stale_params(config):
     params = config.parameters
@@ -1763,9 +1821,9 @@ def set_param_fn(config, phase, test=False):
     config.parameters.Rainfall_Filename = os.path.join("climate", names["rain"])
     config.parameters.Relative_Humidity_Filename = os.path.join("climate", names["hum"])
 
-    #config.parameters.Enable_Default_Reporting = 1 if test else 0     # InsetChart only in the test
-    
-    config.parameters.Enable_Default_Reporting = 1 if (test or (phase == "pickup" and PICKUP_INSETCHART)) else 0
+    # InsetChart: always in the birth test, optional in the pickup, off in the burn-in
+    config.parameters.Enable_Default_Reporting = (
+        1 if (test or (phase == "pickup" and PICKUP_INSETCHART)) else 0)
 
     for logger in ["JsonConfigurable", "VectorHabitat", "StandardEventCoordinator",
                    "SusceptibilityMalaria", "default", "Eradication"]:
@@ -1777,17 +1835,7 @@ def set_param_fn(config, phase, test=False):
     config.parameters.Enable_Local_Migration = 0
 
     conf.add_species(config, manifest, vector_df["species"].tolist())
-    base = 1e7
-    for i in range(len(vector_df)):
-        conf.set_species_param(
-            config, species=vector_df["species"].iloc[i], parameter="Habitats",
-            value=[{"Habitat_Type": "CONSTANT",
-                    "Max_Larval_Capacity": base * vector_df["constant"].iloc[i]},
-                   {"Habitat_Type": "TEMPORARY_RAINFALL",
-                    "Max_Larval_Capacity": base * vector_df["temp_rain"].iloc[i]},
-                   {"Habitat_Type": "WATER_VEGETATION",
-                    "Max_Larval_Capacity": base * vector_df["water_veg"].iloc[i]}],
-            overwrite=True)
+    apply_habitat_config(config)
 
     if APPLY_VECTOR_BEHAVIOUR:                  # MUST EQUAL in both phases
         for _, row in vector_df.iterrows():
@@ -1821,6 +1869,21 @@ def set_param_fn(config, phase, test=False):
 
 def set_param(simulation, param, value):
     return simulation.task.set_parameter(param, value)
+
+
+def apply_habitat_config(config):
+    """Write the species Habitats into a config: capacities from vector.csv (the
+    SCALE_* mix is applied by the campaign). Must be identical in burn-in and pickup."""
+    for i in range(len(vector_df)):
+        sp = vector_df["species"].iloc[i]
+        value = [{"Habitat_Type": "CONSTANT",
+                  "Max_Larval_Capacity": HABITAT_BASE_CAPACITY * vector_df["constant"].iloc[i]},
+                 {"Habitat_Type": "TEMPORARY_RAINFALL",
+                  "Max_Larval_Capacity": HABITAT_BASE_CAPACITY * vector_df["temp_rain"].iloc[i]},
+                 {"Habitat_Type": "WATER_VEGETATION",
+                  "Max_Larval_Capacity": HABITAT_BASE_CAPACITY * vector_df["water_veg"].iloc[i]}]
+        conf.set_species_param(config, species=sp, parameter="Habitats", value=value,
+                               overwrite=True)
 
 
 def scale_habitat_from_mix(mix, vdf):
@@ -1876,7 +1939,7 @@ def build_demog():
 
 
 def _mix_from_index(index):
-    return (1.0, 1.0, 1.0) if index < 0 else tuple(float(x) for x in habitat_df.iloc[index])
+    return _DEFAULT_MIX if index < 0 else tuple(float(x) for x in habitat_df.iloc[index])
 
 
 def build_camp_burnin(habitat=-1, scale_start_day=1):
@@ -1890,14 +1953,14 @@ def build_camp_burnin(habitat=-1, scale_start_day=1):
     return camp
 
 
-def build_camp_pickup(mix=(1.0, 1.0, 1.0), scale_start_day=1):
+def build_camp_pickup(mix=(1.0, 1.0, 1.0), scale_start_day=1, irs=None):
     """Pickup: same habitat mix as the burn-in sim + AL case management + interventions."""
     camp.set_schema(manifest.schema_file)
     add_pregnancy_tracking(camp)
     add_scale_larval_habitats(camp, df=scale_habitat_from_mix(mix, vector_df),
                               start_day=scale_start_day, repetitions=-1)
     add_case_management(camp, CM_PICKUP)
-    add_pickup_interventions(camp)
+    add_pickup_interventions(camp, irs=irs)
     fix_property_restrictions(camp.campaign_dict)
     return camp
 
@@ -1911,9 +1974,21 @@ def update_burnin_habitat(simulation, habitat_index, scale_start_day):
     return dict(zip(HABITAT_TAGS, _mix_from_index(habitat_index)))
 
 
-#############################################################################
-# PICKUP <- BURN-IN LINK
-#############################################################################
+#########################################################################################
+# PICKUP <- BURN-IN LINK ################################################################
+#########################################################################################
+
+def _tag_matches(tag, wanted):
+    """BURNIN_FILTER value may be a scalar or a list; numbers compare as floats."""
+    for w in (wanted if isinstance(wanted, (list, tuple, set)) else [wanted]):
+        try:
+            if float(tag) == float(w):
+                return True
+        except (TypeError, ValueError):
+            if str(tag) == str(w):
+                return True
+    return False
+
 
 def get_burnin_table(platform):
     if not BURNIN_EXPERIMENT_ID:
@@ -1923,7 +1998,7 @@ def get_burnin_table(platform):
     rows, missing = [], 0
     for sim in exp.simulations:
         tags = sim.tags
-        if any(str(tags.get(k)) != str(v) for k, v in BURNIN_FILTER.items()):
+        if not all(_tag_matches(tags.get(k), v) for k, v in BURNIN_FILTER.items()):
             continue
         out_dir = os.path.join(str(platform.get_directory(sim)), "output")
         if not os.path.isfile(os.path.join(out_dir, state_name)):
@@ -1944,26 +2019,54 @@ def get_burnin_table(platform):
     return table
 
 
-def update_pickup_from_burnin(simulation, i, table):
-    row = table.iloc[int(i)]
+IRS_TAG_TO_ARG = {"irs_kill_scale": "kill", "irs_decay_scale": "decay",
+                  "irs_coverage_scale": "cov"}
+
+
+def irs_grid():
+    keys = list(IRS_SWEEP)
+    return [dict(zip(keys, v)) for v in product(*(IRS_SWEEP[k] for k in keys))]
+
+
+def pickup_settings():
+    """IRS settings x config-parameter settings (each a dict of tag -> value)."""
+    keys = list(PICKUP_CONFIG_SWEEP)
+    cfg = [dict(zip(keys, v)) for v in product(*(PICKUP_CONFIG_SWEEP[k] for k in keys))]
+    return [{**i, **c} for i in irs_grid() for c in cfg]
+
+
+def update_pickup_from_burnin(simulation, i, table, irs_settings=None):
+    """i indexes (burn-in state x IRS setting) when irs_settings is given."""
+    i = int(i)
+    irs_tags = {}
+    if irs_settings:
+        irs_tags = irs_settings[i % len(irs_settings)]
+        i //= len(irs_settings)
+    irs = {IRS_TAG_TO_ARG[k]: float(v) for k, v in irs_tags.items() if k in IRS_TAG_TO_ARG}
+    row = table.iloc[i]
     t = simulation.task
+    for k, v in irs_tags.items():                    # PICKUP_CONFIG_SWEEP parameters
+        if k not in IRS_TAG_TO_ARG:
+            t.set_parameter(k, float(v))
     t.set_parameter("Serialized_Population_Path", row["path"])
     t.set_parameter("Serialized_Population_Filenames", [f"state-{BURNIN_DAYS:05d}.dtk"])
     t.set_parameter("Run_Number", int(row["Run_Number"]))
     t.set_parameter("x_Temporary_Larval_Habitat", float(row["xtlh"]))
     mix = tuple(float(row[k]) for k in HABITAT_TAGS)
-    t.create_campaign_from_callback(partial(build_camp_pickup, mix=mix, scale_start_day=1))
+    t.create_campaign_from_callback(partial(build_camp_pickup, mix=mix, scale_start_day=1,
+                                            irs=irs))
     t.set_parameter("Birth_Rate_Dependence", BIRTH_RATE_DEPENDENCE)
     register_custom_events(t.config, pickup_custom_events())     # after the campaign is built
     remove_stale_params(t.config)
     return {"x_Temporary_Larval_Habitat": float(row["xtlh"]),
             "Run_Number": int(row["Run_Number"]),
-            "burnin_sim_id": row["sim_id"], **dict(zip(HABITAT_TAGS, mix))}
+            "burnin_sim_id": row["sim_id"], **dict(zip(HABITAT_TAGS, mix)),
+            **{k: float(v) for k, v in irs_tags.items()}}
 
 
-#############################################################################
-# REPORTS
-#############################################################################
+#########################################################################################
+# REPORTS ###############################################################################
+#########################################################################################
 
 def add_burnin_reports(task):
     add_event_recorder(task, event_list=EVENT_LIST, start_day=1, end_day=BURNIN_DAYS,
@@ -1999,9 +2102,9 @@ def add_pickup_reports(task):
     return task
 
 
-#############################################################################
-# DESCRIBE / SUBMIT
-#############################################################################
+#########################################################################################
+# DESCRIBE / SUBMIT #####################################################################
+#########################################################################################
 
 def describe_settings(step):
     phase = "pickup" if step == "pickup" else "burnin"
@@ -2044,6 +2147,8 @@ def describe_settings(step):
             else:
                 print(f"  {label}: none")
         if has_rows(s["irs"]):
+            print(f"  IRS sweep: {IRS_SWEEP} (coverage cap {IRS_COVERAGE_CAP}); "
+                  f"{len(irs_grid())} settings; CSV values at scale 1.0:")
             for r in s["irs"].itertuples():
                 print(f"    IRS {fmt_day(r.pickup_day)}: cov {r.cov:.3f}, killing "
                       f"{r.killing_initial_effect:g} (box {r.killing_box_duration:g}, "
@@ -2093,7 +2198,7 @@ def make_task(phase, test=False):
 
 def submit(step, test_one=False):
     phase = "pickup" if step == "pickup" else "burnin"
-    test = step in ("test_birth", "test_season")    # no serialization
+    test = step == "test_birth"                     # no serialization
     platform = make_platform()
     builder = SimulationBuilder()
 
@@ -2111,29 +2216,19 @@ def submit(step, test_one=False):
             update_burnin_habitat, dict(scale_start_day=[1], habitat_index=[N_HABS // 2]))
         builder.add_sweep_definition(partial(set_param, param="Run_Number"), range(TEST_SEEDS))
         name = f"{EXPERIMENT_NAME_BURNIN}_BIRTHTEST"
-    elif step == "test_season":
-        global habitat_df
-        habitat_df = pd.DataFrame(
-            list(product(SEASON_TEST_CONSTANT, SEASON_TEST_TEMP_RAIN, SEASON_TEST_WATER_VEG)),
-            columns=HABITAT_TAGS)
-        builder.add_sweep_definition(partial(set_param, param="Simulation_Duration"),
-                                     [SEASON_TEST_YEARS * DAYS_PER_YEAR])
-        builder.add_sweep_definition(partial(set_param, param="x_Temporary_Larval_Habitat"),
-                                     SEASON_TEST_XTLH)
-        builder.add_multiple_parameter_sweep_definition(
-            update_burnin_habitat, dict(scale_start_day=[1], habitat_index=list(range(len(habitat_df)))))
-        builder.add_sweep_definition(partial(set_param, param="Run_Number"), [0])
-        name = f"{EXPERIMENT_NAME_BURNIN}_SEASONTEST"
-        print(f"  Season test: {len(SEASON_TEST_XTLH)} xTLH x {len(habitat_df)} habitat mixes "
-              f"x 1 seed = {len(SEASON_TEST_XTLH) * len(habitat_df)} sims, "
-              f"{SEASON_TEST_YEARS} years each")
     else:
         table = get_burnin_table(platform)
+        if PICKUP_SEEDS:
+            table = table[table["Run_Number"] < PICKUP_SEEDS].reset_index(drop=True)
+        settings = pickup_settings()
+        print(f"  Pickup: {len(table)} burn-in states x {len(settings)} IRS/config settings "
+              f"= {len(table) * len(settings)} sims (IRS from {IRS_FILE})")
         if test_one:
-            table = table.iloc[:1].copy()
-            print("  --test-one: submitting the first burn-in state only.")
-        builder.add_sweep_definition(partial(update_pickup_from_burnin, table=table),
-                                     range(len(table)))
+            table, settings = table.iloc[:1].copy(), settings[:1]
+            print("  --test-one: first burn-in state, first IRS setting only.")
+        builder.add_sweep_definition(
+            partial(update_pickup_from_burnin, table=table, irs_settings=settings),
+            range(len(table) * len(settings)))
         name = EXPERIMENT_NAME_PICKUP
 
     describe_settings(step)
@@ -2159,7 +2254,7 @@ def prepare_inputs(step):
     global CM_BURNIN, SCHEDULES, CM_PICKUP, ITN_USAGE
     validate_inputs(step)
     check_calendar()
-    if step in ("burnin", "test_birth", "test_season"):
+    if step in ("burnin", "test_birth"):
         CM_BURNIN, _ = load_case_management_burnin()
     if step == "pickup":
         if USE_ITN_USAGE_CURVES:
@@ -2168,14 +2263,13 @@ def prepare_inputs(step):
         CM_PICKUP = SCHEDULES["cm"]
 
 
-#############################################################################
-# MAIN
-#############################################################################
+#########################################################################################
+# MAIN ##################################################################################
+#########################################################################################
 
 def parse_args():
     ap = argparse.ArgumentParser(description="UWR burn-in + pickup")
-    ap.add_argument("--step", choices=["setup_climate", "burnin", "test_birth", "test_season",
-                                       "pickup"],
+    ap.add_argument("--step", choices=["setup_climate", "burnin", "test_birth", "pickup"],
                     default=STEP)
     ap.add_argument("--dry-run", action="store_true", help="print settings, submit nothing")
     ap.add_argument("--test-one", action="store_true", help="pickup: first burn-in state only")

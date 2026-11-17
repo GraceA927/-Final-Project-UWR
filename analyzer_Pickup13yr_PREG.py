@@ -4,13 +4,26 @@ UWR Pickup Analyzer, 2013–2025.
 Analyzes an existing EMOD pickup experiment. It does not configure interventions
 or change the serialized pickup state.
 
-Calendar handling: the existing EMOD simulation, climate forcing and
-intervention schedules use a 365-day model calendar. The analyzer therefore
+Calendar handling: the EMOD simulation, climate forcing and intervention
+schedules all use a flat 365-day model calendar (run_UWR_burnin_pickup.py:
+DAYS_PER_YEAR = 365, MONTH_OFFSET = 0,31,59,90,...,334). The analyzer therefore
 keeps model-year/model-month labels and does NOT assign Gregorian dates to
-model days. Gregorian climate dates (1981-01-01 through 2025-12-31) must be
-converted consistently to the model calendar upstream, with leap-day handling
-made explicit. MalariaSummaryReport intervals are 30-day reporting intervals,
-not Gregorian calendar months.
+model days. This matches the run script because the pickup climate files are
+built with 29 Feb dropped (DROP_LEAP_DAYS = True): model day-of-year 60 is
+1 March in every year, so model months line up with Gregorian months.
+
+Pickup climate (from the run script): real weather 2013-2023, then 2024 repeats
+2023 and 2025 repeats 2024. Model years 2024 and 2025 therefore carry no new
+weather information; interpret them as the 2023 climate with updated
+interventions.
+
+MalariaSummaryReport intervals are 30-day reporting intervals, not calendar
+months. Each interval is given a model_year / model_month from its midpoint
+(taken from the report's own Time Of Report), so it can be joined to the monthly
+InsetChart output. A short tail interval can share a month with the previous
+interval; use is_complete_interval or interval_days when merging.
+
+Day indexing: InsetChart rows are zero-based (row 0 = model day 1 = 1 Jan 2013).
 
 Outputs:
   All_Age_InsetChart_pickup.csv
@@ -45,13 +58,32 @@ DAYS_PER_YEAR = 365
 PICKUP_DURATION_DAYS = (PICKUP_END_YEAR - PICKUP_START_YEAR + 1) * DAYS_PER_YEAR
 REPORTING_INTERVAL_DAYS = 30
 STEP = "pickup"
-OUT_SUFFIX = "_Output"
+OUT_SUFFIX = "_AnalyzerOutput"
 
 # Flat 365-day EMOD calendar: cumulative starts for Jan–Dec.
+# Must equal MONTH_OFFSET in run_UWR_burnin_pickup.py.
 MONTH_STARTS = np.array([0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334])
+MONTH_LENGTHS = np.diff(np.append(MONTH_STARTS, DAYS_PER_YEAR))   # 31,28,31,30,...
+
+
+def _check_calendar_constants():
+    """Fail early if the analyzer calendar drifts from the run script's."""
+    if int(MONTH_LENGTHS.sum()) != DAYS_PER_YEAR or list(MONTH_LENGTHS) != [
+        31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31
+    ]:
+        raise ValueError(f"MONTH_STARTS is not a flat 365-day calendar: {MONTH_LENGTHS}")
+    if PICKUP_DURATION_DAYS != 4745:
+        raise ValueError(
+            f"PICKUP_DURATION_DAYS {PICKUP_DURATION_DAYS} != 4745 (run script PICKUP_DAYS)"
+        )
+
+
+_check_calendar_constants()
 
 EXPERIMENTS = {
-    "Pickup13yrs_vector_behaviour": "72d17b00-4fc3-4fa5-acd3-22d9b2a84801", #e85ed97a-4c51-4adc-a003-1cdad8094136####92cd882b-2128-44c2-93c9-6f470f5fc00e #edit to pickup ID
+    "Pickup13yrs_Final": "f514d02d-581d-41f3-b722-82706919d4a5", # 2024 IRS cov0.90 kill0.40 decay240 (prev febcacc9, a06a970d)  #    5b51f593-9063-4545-a08e-9b55ff4fc556 final: sweep result in CSV (kill x0.4), 2024-25 cov 0.90
+    #"Pickup13yrs_SMCfix": "a34f3fc2-e5a2-4665-8908-597987ce8759",  # 2024 IRS cov0.90 kill0.40 decay240 (prev febcacc9, a06a970d)  #    5b51f593-9063-4545-a08e-9b55ff4fc556 final: sweep result in CSV (kill x0.4), 2024-25 cov 0.90
+
 }
 
 TAG_ALIASES = {
@@ -96,14 +128,23 @@ def output_dir(work_dir, expt_name):
 def flat_calendar(n_days, start_year):
     """Map daily rows to the EMOD flat 365-day model calendar.
 
-    Model month lengths are fixed at [31, 28, 31, 30, ...]. This function
-    intentionally does not create Gregorian dates or leap days.
+    Row i (zero-based) is model day i + 1. Model month lengths are fixed at
+    [31, 28, 31, 30, ...]. This function intentionally does not create
+    Gregorian dates or leap days.
     """
     if n_days < 0:
         raise ValueError("n_days must be non-negative")
     day = np.arange(n_days)
     year = int(start_year) + day // DAYS_PER_YEAR
     month = np.searchsorted(MONTH_STARTS, day % DAYS_PER_YEAR, side="right")
+    return year, month
+
+
+def model_year_month(model_day, start_year=PICKUP_START_YEAR):
+    """Model year and month (1-12) of a zero-based (possibly fractional) day index."""
+    day = int(np.floor(model_day))
+    year = int(start_year) + day // DAYS_PER_YEAR
+    month = int(np.searchsorted(MONTH_STARTS, day % DAYS_PER_YEAR, side="right"))
     return year, month
 
 
@@ -205,7 +246,11 @@ class PickupAnalyzer(IAnalyzer):
 
 
 class InsetChartAnalyzer(PickupAnalyzer):
-    """Aggregate daily InsetChart channels to calendar-month means."""
+    """Aggregate daily InsetChart channels to model-month means.
+
+    Channels are MEANS of the daily values (e.g. 'New Clinical Cases' is the
+    mean daily count). Multiply by days_simulated for a monthly total.
+    """
 
     OUTPUT_PREFIX = "All_Age_InsetChart"
     TMP_DIRNAME = "_per_sim_insetchart"
@@ -244,6 +289,14 @@ class InsetChartAnalyzer(PickupAnalyzer):
             **{c: (c, "mean") for c in value_columns},
             days_simulated=("_day_present", "sum"),
         )
+
+        # Calendar check: every complete model month must have its fixed length.
+        expected_len = monthly["Month"].astype(int).map(lambda m: int(MONTH_LENGTHS[m - 1]))
+        partial = monthly["days_simulated"] != expected_len
+        if partial.any() and len(daily) == expected_days:
+            print(f"WARNING: {int(partial.sum())} model months have an unexpected "
+                  f"number of days (calendar mismatch).")
+
         monthly["model_month"] = (
             monthly["Year"].astype(int).astype(str) + "-" +
             monthly["Month"].astype(int).astype(str).str.zfill(2)
@@ -258,9 +311,11 @@ class MonthlyPfPRAnalyzer(PickupAnalyzer):
     Extract MalariaSummaryReport time-by-age data.
 
     EMOD's reporting_interval is 30 days, so `report_interval` is deliberately
-    not labelled as a calendar month. The final interval is excluded only when
-    the report contains more intervals than the expected complete 30-day
-    intervals for that report-year file; this avoids blindly dropping data.
+    not labelled as a calendar month. Each interval is however given a
+    model_year / model_month taken from its midpoint (flat 365-day calendar) so
+    it can be joined to the monthly InsetChart output. The final interval is excluded only when the
+    report contains more intervals than the expected complete 30-day intervals
+    for that report-year file; this avoids blindly dropping data.
     """
 
     OUTPUT_PREFIX = "PfPR_ClinicalIncidence_monthly"
@@ -332,6 +387,7 @@ class MonthlyPfPRAnalyzer(PickupAnalyzer):
             metadata_start_day = int(
                 metadata.get("Start_Day", (int(report_year) - self.start_year) * DAYS_PER_YEAR)
             )
+
             records = []
             previous_end = metadata_start_day
             for interval_idx in range(n_available):
@@ -350,6 +406,7 @@ class MonthlyPfPRAnalyzer(PickupAnalyzer):
                 # end_day is treated as an exclusive boundary. The final
                 # simulated day in the interval is end_day - 1.
                 midpoint_day = start_day + (actual_days - 1) / 2.0
+                mid_year, mid_month = model_year_month(midpoint_day, self.start_year)
 
                 for age_idx, age_bin in enumerate(age_bins):
                     rec = {
@@ -363,6 +420,8 @@ class MonthlyPfPRAnalyzer(PickupAnalyzer):
                         "interval_start_model_time": model_day_time(start_day, self.start_year),
                         "interval_end_model_time_exclusive": model_day_time(end_day, self.start_year),
                         "interval_midpoint_model_time": model_day_time(midpoint_day, self.start_year),
+                        "model_year": mid_year,
+                        "model_month": mid_month,
                         "agebin": float(age_bin),
                     }
                     for metric, rows in metric_arrays.items():
@@ -378,7 +437,7 @@ class MonthlyPfPRAnalyzer(PickupAnalyzer):
 
 
 class EventRecorderAnalyzer(PickupAnalyzer):
-    """Count events by pickup year and event name."""
+    """Count events by pickup (model) year and event name."""
 
     OUTPUT_PREFIX = "EventCounts"
     TMP_DIRNAME = "_per_sim_events"

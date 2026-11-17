@@ -4,25 +4,31 @@ UWR Scenario Analyzer, 2026-2032 (IRS continuation vs IG2 replacement).
 Companion to run_scenarios_UWR.py. Analyzes an existing scenario experiment
 (pickup state x scenario sweep). It does not configure interventions.
 
-Design (same pattern as the pickup analyzer)
---------------------------------------------
+Net-use assumptions analysed (IG2_USAGE_RUN in run_scenarios_UWR.py)
+-------------------------------------------------------------------
+  full           WITH age-specific usage, seasonal usage and net retention
+                 effective use = c x retention x age multiplier x season multiplier
+  no_age_season  WITHOUT age/seasonal usage: coverage and retention only
+                 effective use = c x retention
+Each assumption gets its own sub folder with estimated clinical incidence and
+PfPR, cases averted (with error bars) and effective-use coverage versus malaria
+outcomes relative to continued IRS (BAU).
+
+Design
+------
   Stage 1  idmtools analyzers write ONE csv per simulation, then concatenate:
-             InsetChart          daily -> model-month means (+ sums of counts)
+             InsetChart           daily -> model-month means (+ sums of counts)
              MalariaSummaryReport time x age-bin PfPR / incidence / population
              ReportEventRecorder  event counts by model year
              ReportEventCounter   Bednet_Using per day -> monthly (optional)
-           Every row carries the scenario tags written by update_simulation():
-           scenario, scenario_kind, ig2_coverage, ig2_kill_key, Run_Number,
-           pickup_sim_index and the habitat tags.
+           Every row carries the scenario tags written by update_simulation().
   Stage 2  post-processing (plain pandas, re-runnable with --skip-analysis):
              annual burden per simulation
-             PAIRED comparison of each arm with IRS_CONTINUE (and NO_IRS):
-               arms share weather, serialized pickup state and seed, so the
-               pairing key is the pickup state (pickup_sim_index)
-             pairing check: 2026 is a common path, arms must agree before
-               IRS_SWITCH_YEAR
-             effective use for every tested coverage c:
-               effective use = c x net retention x age multiplier x season multiplier
+             PAIRED comparison of each arm with BAU (and NO_IRS): arms share
+               weather, serialized pickup state and seed, so the pairing key is
+               the pickup state (pickup_sim_index)
+             pairing check: years before IRS_SWITCH_YEAR are a common path
+             effective use for every tested coverage c and every assumption
              minimum IG2 coverage that maintains or reduces burden
              realized IG2 distribution coverage (sanity check vs c)
 
@@ -44,14 +50,25 @@ Outputs (in <job_dir>/<experiment>_AnalyzerOutput/):
   IG2_EffectiveUse_scenarios.csv
   IG2_CoverageResponse_scenarios.csv
   IG2_MinimumCoverage_scenarios.csv
+  IG2_TargetCoverage_scenarios.csv
   IG2_RealizedDistribution_scenarios.csv
   PairingCheck_scenarios.csv
-  + PNG plots
+  IG2_CoverageResponse_scenarios.png
+  WITH_age_season_retention/
+  WITHOUT_age_season_coverage_x_retention/
+      Estimated_outcomes.csv                  + Estimated_incidence_PfPR.png
+      CasesAverted_vs_BAU.csv                 + CasesAverted_vs_BAU.png (error bars)
+      CasesAverted_annual_vs_BAU.csv
+      EffectiveUse_vs_outcomes.csv            + EffectiveUse_vs_outcomes.png
+      IG2_EffectiveUse.csv
+      Timeseries_*.png, AnnualImpact_incidence.png, NetUse_monthly.png
+  COMPARISON_both_assumptions/
+      EffectiveUse_vs_outcomes_both.csv/.png
 
 Usage:
   python analyze_scenarios_UWR.py                  # analyze + post-process + plots
   python analyze_scenarios_UWR.py --skip-analysis  # re-run stage 2 on existing csvs
-  python analyze_scenarios_UWR.py --experiment-id <ID>
+  python analyze_scenarios_UWR.py --experiment-id <ID> [--experiment-name <NAME>]
 """
 
 import argparse
@@ -59,6 +76,7 @@ import io
 import os
 import re
 import shutil
+import sys
 from abc import abstractmethod
 
 import matplotlib
@@ -75,8 +93,15 @@ from idmtools.entities.simulation import Simulation
 # SETTINGS
 # =============================================================================
 
+# NOTE: this must be the id of the SCENARIO experiment written by
+# run_scenarios_UWR.py (printed as "Experiment ID" at submission), NOT the
+# PICKUP_EXPERIMENT_ID. Pass --experiment-id to override.
 EXPERIMENTS = {
-    "Pickup13yrs_Scenario_Final": "2a436f57-8a8c-43fe-94c8-e39974eb262a",  #                                  PUT-SCENARIO-EXPERIMENT-ID-HERE
+    "UWR_BAU_vs_IG2_netuse_retention": "",
+    # previous runs: UWR_BAU_vs_IG2_netuse 2f0c1c1c-ae93-4189-9731-f9fd4fc10450 (full, none);
+    # UWR_BAU_vs_IG2_usage 9a45fe29-83ea-43a4-93b7-685f01aabce5 (age/season variants);
+    # UWR_BAU_vs_IG2 fb883f01-13a9-4150-a559-f437786bbefa (full use only);
+    # Pickup13yrs_Scenario_Final 2dd3b2e9-9f4d-4743-89b9-ab13f4f6c331
 }
 STEP = "scenarios"
 OUT_SUFFIX = "_AnalyzerOutput"
@@ -92,12 +117,43 @@ MONTH_STARTS = np.array([0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334])
 # ---- Scenario design (MUST MATCH) -------------------------------------------
 BASELINE = "BAU"                   # business as usual (run script BAU_ARM_NAME)
 LOWER_BOUND = "NO_IRS"
+IRS_REFERENCES = []                # extra paired references (none in this experiment)
 IRS_SWITCH_YEAR = 2027
 IG2_CAMPAIGN_YEARS = [2027, 2030]
 IG2_CAMPAIGN_DOY = 91
 IG2_DISCARD_K = 3.0
 IG2_DISCARD_L = 1095.0
-IG2_USE_CURVES = True
+IG2_USE_CURVES = True                  # must match run_scenarios_UWR.py
+# Usage assumptions (MUST MATCH IG2_USAGE_MODES in run_scenarios_UWR.py).
+# Arms without an ig2_usage tag (older experiments) are treated as "full".
+IG2_USAGE_MODES = {
+    "full": dict(age=True, season=True, retention=True),
+    "none": dict(age=False, season=False, retention=False),
+    "no_age": dict(age=False, season=True, retention=True),
+    "no_season": dict(age=True, season=False, retention=True),
+    "no_retention": dict(age=True, season=True, retention=False),
+    "no_age_season": dict(age=False, season=False, retention=True),
+}
+DEFAULT_IG2_USAGE = "full"
+
+# Sub folders, one per net-use assumption.
+USAGE_FOLDERS = {
+    "full": "WITH_age_season_retention",
+    "no_age_season": "WITHOUT_age_season_coverage_x_retention",
+}
+USAGE_TITLES = {
+    "full": "WITH age-specific usage, seasonal usage and net retention",
+    "no_age_season": "WITHOUT age/seasonal usage (coverage x retention only)",
+}
+COMPARISON_FOLDER = "COMPARISON_both_assumptions"
+
+# Coverage threshold: the IG2 DISTRIBUTION coverage needed to reach each
+# EFFECTIVE-USE target (time-averaged over the net cycle), per net-use assumption.
+# required distribution coverage = target / (retention x age x season).
+# Outcomes vs BAU at that coverage are interpolated between the simulated
+# coverages; outside the simulated range they are not estimated.
+EFFECTIVE_USE_TARGETS = [0.40, 0.60, 0.80]
+TARGET_METRICS = ["incidence_per_1000_py", "pfpr_all_ages", "U5_pfpr", "clinical_cases"]
 
 # ---- Analysis window --------------------------------------------------------
 # Years before IRS_SWITCH_YEAR are a common path. Raise ANALYSIS_START_YEAR to
@@ -106,14 +162,13 @@ ANALYSIS_START_YEAR = IRS_SWITCH_YEAR
 ANALYSIS_END_YEAR = PROJ_END_YEAR
 
 # ---- "Maintains or reduces burden" rule -------------------------------------
-# Primary burden metric (column of the window-metric table).
 PRIMARY_METRIC = "incidence_per_1000_py"
 # "median": median paired relative change <= margin
 # "upper":  UPPER_Q quantile of the paired relative change <= margin
 THRESHOLD_RULE = "median"
 UPPER_Q = 0.90
 NONINFERIORITY_MARGIN = 0.0        # 0.0 = no increase; 0.05 = tolerate +5 %
-LOWER_Q, HIGH_Q = 0.10, 0.90       # spread shown in summaries / plots
+LOWER_Q, HIGH_Q = 0.10, 0.90       # spread shown in summaries / plots (error bars)
 
 # ---- Usage curves for effective use (same files as the scenario script) -----
 PROJECT_DIR = "/shared/home/grace/Final-Project-UWR"
@@ -142,16 +197,15 @@ TAG_ALIASES = {
     "scenario_kind": ["scenario_kind"],
     "ig2_coverage": ["ig2_coverage"],
     "ig2_kill_key": ["ig2_kill_key"],
-    "strategy": ["strategy"],
-    "cm_boost": ["cm_boost"],
+    "ig2_usage": ["ig2_usage"],
 }
 SWEEP_VARIABLES = list(TAG_ALIASES)
 PAIR_FALLBACK = ["Run_Number", "x_Temporary_Larval_Habitat", "scale_constant",
                  "scale_temp_rain", "scale_water_veg"]
 SIM_KEYS = ["sim_id", "pair_id", "scenario", "scenario_kind", "ig2_coverage",
-            "ig2_kill_key", "strategy", "cm_boost", "Run_Number", "pickup_sim_index",
-            "x_Temporary_Larval_Habitat", "scale_constant", "scale_temp_rain",
-            "scale_water_veg"]
+            "ig2_kill_key", "ig2_usage", "strategy", "cm_boost", "Run_Number",
+            "pickup_sim_index", "x_Temporary_Larval_Habitat", "scale_constant",
+            "scale_temp_rain", "scale_water_veg"]
 
 INSET_CHANNELS = [
     "Statistical Population", "New Clinical Cases", "Blood Smear Parasite Prevalence",
@@ -170,8 +224,6 @@ PFPR_METRICS = {
 }
 U5_MAX_AGE_YEARS = 5.0     # age-bin upper edge <= 5 y counts as under five
 EVENT_YEAR_SUFFIX = re.compile(r"_(?:19|20)\d{2}$")
-PLOT_EVENTS = ["Received_ITN_IG2", "Received_ITN_ANC", "Received_ITN_CWC",
-               "Received_SMC", "Received_Treatment", "NewClinicalCase"]
 
 # ---- Optional net-use diagnostic (run_scenarios_UWR.py: ADD_NET_USE_COUNTER) -
 RUN_NET_USE = True
@@ -538,9 +590,14 @@ def add_pair_id(df):
 
 def load_table(path):
     df = pd.read_csv(path)
-    for c in ("scenario", "scenario_kind", "ig2_kill_key", "strategy"):
+    for c in ("scenario", "scenario_kind", "ig2_kill_key", "ig2_usage", "strategy"):
         if c in df.columns:
             df[c] = df[c].fillna("").astype(str)
+    if "scenario_kind" in df.columns:          # IG2 arms of older runs have no usage tag
+        if "ig2_usage" not in df.columns:
+            df["ig2_usage"] = ""
+        is_ig2 = df["scenario_kind"] == "ig2"
+        df.loc[is_ig2 & (df["ig2_usage"] == ""), "ig2_usage"] = DEFAULT_IG2_USAGE
     if "cm_boost" in df.columns:
         df["cm_boost"] = pd.to_numeric(df["cm_boost"], errors="coerce").fillna(0.0)
     if "ig2_coverage" in df.columns:
@@ -550,11 +607,6 @@ def load_table(path):
 
 def sim_keys(df):
     return [k for k in SIM_KEYS if k in df.columns]
-
-
-def scenario_cols(df):
-    return [c for c in ("scenario", "scenario_kind", "ig2_coverage", "ig2_kill_key",
-                        "strategy", "cm_boost") if c in df.columns]
 
 
 # =============================================================================
@@ -633,6 +685,25 @@ def u5_window_metrics(pf, years):
     return out[["sim_id", "U5_clinical_incidence_per_1000_py", "U5_pfpr"]]
 
 
+def u5_interval_table(pf):
+    """Under-five PfPR and incidence per reporting interval (for time series)."""
+    need = {"Cases", "Pop", "PfPR", "agebin", "interval_midpoint_model_time"}
+    if not need <= set(pf.columns):
+        return None
+    d = pf[pf["agebin"] <= U5_MAX_AGE_YEARS].copy()
+    if d.empty:
+        return None
+    d["_ci"] = d["Cases"] * d["Pop"]
+    d["_pp"] = d["PfPR"] * d["Pop"]
+    keys = sim_keys(d) + ["Year", "report_interval", "interval_midpoint_model_time"]
+    iv = d.groupby(keys, dropna=False, as_index=False).agg(
+        _ci=("_ci", "sum"), _pp=("_pp", "sum"), _pop=("Pop", "sum"))
+    iv = iv[iv["_pop"] > 0].copy()
+    iv["U5_pfpr"] = iv["_pp"] / iv["_pop"]
+    iv["U5_incidence_per_1000_py"] = iv["_ci"] / iv["_pop"] * 1000.0
+    return iv
+
+
 METRICS_BASE = ["clinical_cases", "incidence_per_1000_py", "pfpr_all_ages", "annual_EIR"]
 METRICS_U5 = ["U5_clinical_incidence_per_1000_py", "U5_pfpr"]
 
@@ -642,7 +713,14 @@ METRICS_U5 = ["U5_clinical_incidence_per_1000_py", "U5_pfpr"]
 # =============================================================================
 
 ARM_KEYS = ["scenario", "scenario_kind", "ig2_coverage", "ig2_kill_key",
-            "strategy", "cm_boost"]
+            "ig2_usage", "strategy", "cm_boost"]
+
+
+def _fill_arm_keys(m):
+    for k in ARM_KEYS:              # older experiments lack strategy / cm_boost
+        if k not in m.columns:
+            m[k] = 0.0 if k == "cm_boost" else (m["scenario"] if k == "strategy" else "")
+    return m
 
 
 def _reference_table(df, reference, value_cols, extra_keys=()):
@@ -663,10 +741,7 @@ def paired_impact(win, reference, metrics):
         print(f"NOTE: no {reference} simulations; paired impact vs {reference} skipped.")
         return None
     arm = win[win["scenario"] != reference]
-    m = arm.merge(ref, on="pair_id", how="inner")
-    for k in ARM_KEYS:              # older experiments lack strategy / cm_boost
-        if k not in m.columns:
-            m[k] = 0.0 if k == "cm_boost" else (m["scenario"] if k == "strategy" else "")
+    m = _fill_arm_keys(arm.merge(ref, on="pair_id", how="inner"))
     if m.empty:
         print(f"WARNING: no arm could be paired with {reference}.")
         return None
@@ -706,16 +781,14 @@ def summarise_impact(paired):
 
 
 def annual_paired_summary(annual, reference):
-    metric = "incidence_per_1000"
     col = "incidence_per_1000_py"
     ref = _reference_table(annual, reference, [col], extra_keys=["Year"])
     if ref is None:
         return None
     arm = annual[annual["scenario"] != reference]
-    m = arm.merge(ref, on=["pair_id", "Year"], how="inner")
-    for k in ARM_KEYS:
-        if k not in m.columns:
-            m[k] = 0.0 if k == "cm_boost" else (m["scenario"] if k == "strategy" else "")
+    m = _fill_arm_keys(arm.merge(ref, on=["pair_id", "Year"], how="inner"))
+    if m.empty:
+        return None
     m["abs_diff"] = m[col] - m[f"{col}__ref"]
     m["rel_change"] = np.where(m[f"{col}__ref"] != 0,
                                m["abs_diff"] / m[f"{col}__ref"], np.nan)
@@ -725,15 +798,15 @@ def annual_paired_summary(annual, reference):
         median_rel_change=("rel_change", "median"),
         q_low_rel_change=("rel_change", lambda x: x.quantile(LOWER_Q)),
         q_high_rel_change=("rel_change", lambda x: x.quantile(HIGH_Q)),
-        max_abs_diff_cases=("abs_diff", lambda x: x.abs().max()),
+        max_abs_diff=("abs_diff", lambda x: x.abs().max()),
     ).reset_index()
     out.insert(0, "reference", reference)
-    out.insert(1, "metric", metric)
+    out.insert(1, "metric", "incidence_per_1000_py")
     return out
 
 
 def pairing_check(annual):
-    """2026 is a common path: arms should match the baseline before the switch."""
+    """Years before the switch are a common path: arms should match the baseline."""
     ref = _reference_table(annual, BASELINE, ["clinical_cases"], extra_keys=["Year"])
     if ref is None:
         return None
@@ -745,8 +818,7 @@ def pairing_check(annual):
     out = m.groupby(["scenario", "Year"], as_index=False).agg(
         max_abs_diff_cases=("abs_diff_cases", "max"),
         n_pairs=("pair_id", "nunique"))
-    print("\nPairing check (years before the switch must match "
-          f"{BASELINE}):")
+    print(f"\nPairing check (years before the switch must match {BASELINE}):")
     worst = out["max_abs_diff_cases"].max()
     if worst > 0:
         print(f"  WARNING: arms differ before 1 Jan {IRS_SWITCH_YEAR} "
@@ -875,36 +947,43 @@ def campaign_cycle_days():
     return 3 * DAYS_PER_YEAR
 
 
-def effective_use_factors(age_weights=None):
-    """Return the c-independent factors of: effective use = c x retention x age x season."""
+def effective_use_factors(age_weights=None, usage=DEFAULT_IG2_USAGE):
+    """c-independent factors of: effective use = c x retention x age x season."""
     cycle = campaign_cycle_days()
     t = np.arange(cycle) + 0.5                       # days since distribution
-    survival = np.exp(-(t / IG2_DISCARD_L) ** IG2_DISCARD_K)
+    mode = IG2_USAGE_MODES.get(usage, dict(age=True, season=True, retention=True))
+    if mode.get("retention", True):
+        survival = np.exp(-(t / IG2_DISCARD_L) ** IG2_DISCARD_K)
+    else:
+        survival = np.ones_like(t)                   # nets kept for the whole cycle
     retention = float(survival.mean())
 
-    if not IG2_USE_CURVES:
+    if not IG2_USE_CURVES or not (mode["age"] or mode["season"]):
         return dict(cycle_days=cycle, retention=retention, age_multiplier=1.0,
                     season_multiplier=1.0, season_at_distribution=1.0)
 
     year = IG2_CAMPAIGN_YEARS[0]
-    ages, aval = read_usage_curve(ITN_AGE_FILE, "age", year)
-    days, sval = read_usage_curve(ITN_SEASON_FILE, "season", year)
-    age_mult = mean_age_multiplier(ages, aval, age_weights)
-
-    doy = ((IG2_CAMPAIGN_DOY - 1 + t) % DAYS_PER_YEAR) + 1
-    season_t = cyclic_interp(days, sval, doy)
-    # Retention-weighted, so that the product of the three factors is exact.
-    season_mult = float((survival * season_t).mean() / retention)
+    age_mult, season_mult, season_dist = 1.0, 1.0, 1.0
+    if mode["age"]:
+        ages, aval = read_usage_curve(ITN_AGE_FILE, "age", year)
+        age_mult = mean_age_multiplier(ages, aval, age_weights)
+    if mode["season"]:
+        days, sval = read_usage_curve(ITN_SEASON_FILE, "season", year)
+        doy = ((IG2_CAMPAIGN_DOY - 1 + t) % DAYS_PER_YEAR) + 1
+        season_t = cyclic_interp(days, sval, doy)
+        # Retention-weighted, so that the product of the three factors is exact.
+        season_mult = float((survival * season_t).mean() / retention)
+        season_dist = float(cyclic_interp(days, sval, IG2_CAMPAIGN_DOY))
     return dict(cycle_days=cycle, retention=retention, age_multiplier=age_mult,
-                season_multiplier=season_mult,
-                season_at_distribution=float(cyclic_interp(days, sval, IG2_CAMPAIGN_DOY)))
+                season_multiplier=season_mult, season_at_distribution=season_dist)
 
 
-def effective_use_table(coverages, factors):
+def effective_use_table(coverages, factors, usage=DEFAULT_IG2_USAGE):
     rows = []
     for c in sorted(set(float(x) for x in coverages)):
         f = factors
         rows.append(dict(
+            ig2_usage=usage,
             ig2_coverage=c,
             cycle_days=f["cycle_days"],
             net_retention=f["retention"],
@@ -930,18 +1009,21 @@ def coverage_response(summary, eff):
     stat = "median_rel_change" if THRESHOLD_RULE == "median" else "q_upper_rule"
     s["rule_statistic"] = s[stat]
     s["meets_criterion"] = s["rule_statistic"] <= NONINFERIORITY_MARGIN
-    s = s.merge(eff, on="ig2_coverage", how="left")
-    return s.sort_values(["ig2_kill_key", "ig2_coverage"]).reset_index(drop=True)
+    s = s.merge(eff, on=["ig2_usage", "ig2_coverage"], how="left")
+    return s.sort_values(["ig2_kill_key", "ig2_usage", "ig2_coverage"]).reset_index(drop=True)
 
 
 def minimum_coverage(resp):
+    """Smallest tested coverage from which every higher tested coverage also
+    meets the criterion (robust threshold), and the effective use it implies."""
     rows = []
-    for key, g in resp.groupby("ig2_kill_key"):
-        g = g.sort_values("ig2_coverage")
-        meets = g["meets_criterion"].to_numpy()
-        covs = g["ig2_coverage"].to_numpy()
+    for (key, usage), g in resp.groupby(["ig2_kill_key", "ig2_usage"]):
+        g = g.sort_values("ig2_coverage").reset_index(drop=True)
+        meets = g["meets_criterion"].to_numpy(dtype=bool)
+        covs = g["ig2_coverage"].to_numpy(float)
         robust = next((covs[i] for i in range(len(meets)) if meets[i:].all()), np.nan)
-        first = covs[meets].min() if meets.any() else np.nan
+        first = float(covs[meets].min()) if meets.any() else np.nan
+
         note = []
         if np.isnan(robust):
             note.append("no tested coverage reliably meets the criterion; "
@@ -949,361 +1031,602 @@ def minimum_coverage(resp):
         elif robust == covs.min():
             note.append("lowest tested coverage already meets it; the true threshold "
                         "may be lower")
-        if not np.isnan(robust) and not np.isnan(first) and robust != first:
-            note.append("non-monotone response (stochastic noise?); use the robust value")
-        pick = g[g["ig2_coverage"] == robust]
+        if not np.isnan(robust) and not np.isnan(first) and first != robust:
+            note.append(f"criterion is not monotonic in coverage (first met at "
+                        f"{first:.2f}, reliably from {robust:.2f})")
+
+        def at(c, col):
+            if np.isnan(c):
+                return np.nan
+            sel = g.loc[np.isclose(g["ig2_coverage"], c), col]
+            return float(sel.iloc[0]) if len(sel) else np.nan
+
         rows.append(dict(
-            ig2_kill_key=key, primary_metric=PRIMARY_METRIC, rule=THRESHOLD_RULE,
-            upper_q=UPPER_Q if THRESHOLD_RULE == "upper" else np.nan,
-            margin=NONINFERIORITY_MARGIN,
-            min_coverage_robust=robust, min_coverage_first_meeting=first,
-            effective_use_time_avg=float(pick["effective_use_time_avg"].iloc[0]) if len(pick) else np.nan,
-            effective_use_at_distribution=float(pick["effective_use_at_distribution"].iloc[0]) if len(pick) else np.nan,
-            median_rel_change_at_threshold=float(pick["median_rel_change"].iloc[0]) if len(pick) else np.nan,
-            n_pairs=int(g["n_pairs"].max()),
+            ig2_kill_key=key, ig2_usage=usage,
+            rule=THRESHOLD_RULE, margin=NONINFERIORITY_MARGIN, metric=PRIMARY_METRIC,
+            min_coverage_robust=robust, min_coverage_first_met=first,
+            effective_use_time_avg_at_min=at(robust, "effective_use_time_avg"),
+            effective_use_at_distribution_at_min=at(robust, "effective_use_at_distribution"),
+            net_retention=at(robust, "net_retention"),
+            age_multiplier=at(robust, "age_multiplier"),
+            season_multiplier=at(robust, "season_multiplier"),
+            median_rel_change_at_min=at(robust, "median_rel_change"),
+            q_low_at_min=at(robust, "q_low_rel_change"),
+            q_high_at_min=at(robust, "q_high_rel_change"),
+            tested_coverages=", ".join(f"{c:.2f}" for c in covs),
             note="; ".join(note)))
     return pd.DataFrame(rows)
 
 
+def target_coverage_table(summary, factors):
+    """Distribution coverage needed for each effective-use target, with outcomes
+    vs BAU interpolated between simulated coverages (NaN outside the tested range)."""
+    s = summary[(summary["reference"] == BASELINE) & (summary["scenario_kind"] == "ig2")
+                & (summary["metric"].isin(TARGET_METRICS))]
+    if "cm_boost" in s.columns:
+        s = s[s["cm_boost"].fillna(0.0) == 0.0]
+    rows = []
+    for (key, usage), g in s.groupby(["ig2_kill_key", "ig2_usage"]):
+        f = factors.get(usage)
+        if f is None:
+            continue
+        per_c = f["retention"] * f["age_multiplier"] * f["season_multiplier"]
+        for target in EFFECTIVE_USE_TARGETS:
+            c_req = target / per_c
+            row = dict(ig2_kill_key=key, ig2_usage=usage,
+                       target_effective_use=target,
+                       required_distribution_coverage=c_req,
+                       feasible=bool(c_req <= 1.0))
+            notes = []
+            if c_req > 1.0:
+                notes.append("target not reachable even at 100% distribution coverage")
+            for metric, gm in g.groupby("metric"):
+                gm = gm.sort_values("ig2_coverage")
+                xs = gm["ig2_coverage"].to_numpy(float)
+                inside = xs.min() <= c_req <= xs.max()
+                for col in ("median_rel_change", "median_abs_diff"):
+                    row[f"{metric}__{col}"] = (
+                        float(np.interp(c_req, xs, gm[col].to_numpy(float)))
+                        if inside else np.nan)
+            if c_req <= 1.0 and not g.empty:
+                lo, hi = g["ig2_coverage"].min(), g["ig2_coverage"].max()
+                if not (lo <= c_req <= hi):
+                    notes.append(f"outside tested range {lo:.2f}-{hi:.2f}; "
+                                 f"outcomes not estimated")
+            row["note"] = "; ".join(notes)
+            rows.append(row)
+    return pd.DataFrame(rows)
+
+
 # =============================================================================
-# STAGE 2: REALIZED DISTRIBUTION
+# STAGE 2: REALIZED DISTRIBUTION (sanity check of c)
 # =============================================================================
 
 def realized_distribution(events, annual):
-    """Received_ITN_IG2 events per person in campaign years, vs the requested c."""
-    e = events[events["Event_Name"] == "Received_ITN_IG2"].copy()
-    if e.empty:
+    """Received_ITN_IG2 events in each campaign year / mean population of that year."""
+    if events is None:
         return None
-    e = e.dropna(subset=["Year"])
-    e["Year"] = e["Year"].astype(int)
-    per_sim = e.groupby(["sim_id", "Year"], as_index=False)["Count"].sum()
-    m = per_sim.merge(annual[["sim_id", "Year", "population"]], on=["sim_id", "Year"], how="left")
-    m = m.merge(annual[["sim_id", "scenario", "ig2_coverage"]].drop_duplicates("sim_id"),
-                on="sim_id", how="left")
+    ev = events[events["Event_Name"] == "Received_ITN_IG2"].copy()
+    ev = ev.dropna(subset=["Year"])
+    if ev.empty:
+        return None
+    ev["Year"] = ev["Year"].astype(int)
+    ev = ev[ev["Year"].isin([int(y) for y in IG2_CAMPAIGN_YEARS])]
+    if ev.empty:
+        return None
+    pop = annual[["sim_id", "Year", "population"]].copy()
+    pop["Year"] = pop["Year"].astype(int)
+    m = ev.merge(pop, on=["sim_id", "Year"], how="left")
     m["realized_coverage"] = m["Count"] / m["population"]
-    out = m.groupby(["scenario", "ig2_coverage", "Year"], as_index=False).agg(
-        mean_nets_issued=("Count", "mean"),
-        mean_realized_coverage=("realized_coverage", "mean"),
-        n_sims=("sim_id", "nunique"))
-    out["ratio_to_requested"] = out["mean_realized_coverage"] / out["ig2_coverage"]
+    out = m.groupby(["scenario", "ig2_usage", "ig2_coverage", "Year"], dropna=False).agg(
+        n_sims=("sim_id", "nunique"),
+        median_received=("Count", "median"),
+        median_realized_coverage=("realized_coverage", "median"),
+        q_low=("realized_coverage", lambda x: x.quantile(LOWER_Q)),
+        q_high=("realized_coverage", lambda x: x.quantile(HIGH_Q))).reset_index()
+    out["target_coverage"] = out["ig2_coverage"]
+    out["note"] = ("counts divided by the year's mean population; a rough check "
+                   "that distribution matches c")
     return out
 
 
 # =============================================================================
-# PLOTS
+# PLOTTING HELPERS
 # =============================================================================
 
-def scenario_styles(df):
-    """Baseline black, NO_IRS grey dashed, IG2 arms viridis by coverage."""
-    info = (df[scenario_cols(df)].drop_duplicates().sort_values(
-        ["scenario_kind", "ig2_coverage"]))
-    cov = info.loc[info["scenario_kind"] == "ig2", "ig2_coverage"]
-    lo, hi = (cov.min(), cov.max()) if len(cov) else (0, 1)
-    kills = sorted(info.loc[info["scenario_kind"] == "ig2", "ig2_kill_key"].unique())
-    dashes = ["-", ":", "-."]
-    styles = {}
-    for r in info.itertuples():
-        if r.scenario == BASELINE:
-            styles[r.scenario] = dict(color="black", linestyle="-", linewidth=2.0)
-        elif r.scenario == LOWER_BOUND:
-            styles[r.scenario] = dict(color="0.5", linestyle="--", linewidth=1.6)
-        else:
-            frac = 0.0 if hi == lo else (r.ig2_coverage - lo) / (hi - lo)
-            ls = dashes[kills.index(r.ig2_kill_key) % 3] if r.ig2_kill_key in kills else "-"
-            styles[r.scenario] = dict(color=plt.cm.viridis(0.05 + 0.85 * frac),
-                                      linestyle=ls, linewidth=1.3)
-    order = [s for s in [BASELINE, LOWER_BOUND] if s in styles] + \
-            [r.scenario for r in info.itertuples() if r.scenario not in (BASELINE, LOWER_BOUND)]
-    return styles, order
+def _arm_label(scenario, cov=None):
+    if scenario == BASELINE:
+        return "BAU (continued IRS)"
+    if scenario == LOWER_BOUND:
+        return "No IRS, no IG2"
+    if str(scenario).startswith("IG2_"):
+        p = str(scenario).split("_")
+        return f"IG2 {p[1]}%" + (f" ({p[2]})" if len(p) > 2 else "")
+    if cov is not None and not pd.isna(cov):
+        return f"IG2 {int(round(float(cov) * 100))}%"
+    return str(scenario)
 
 
-def _mark_campaigns(ax, x_is_year=True):
-    ax.axvline(IRS_SWITCH_YEAR, color="red", linestyle="--", linewidth=0.9, alpha=0.7)
+def _arm_colors(scenarios):
+    ig2 = sorted(s for s in scenarios if str(s).startswith("IG2_"))
+    cmap = plt.get_cmap("viridis")
+    colors = {BASELINE: "black", LOWER_BOUND: "#888888"}
+    for i, s in enumerate(ig2):
+        colors[s] = cmap(0.15 + 0.7 * i / max(1, len(ig2) - 1))
+    return colors
+
+
+def _scenario_order(names):
+    names = set(names)
+    ig2 = sorted((s for s in names if str(s).startswith("IG2_")),
+                 key=lambda s: (int(str(s).split("_")[1]), str(s)))
+    return [s for s in (BASELINE, LOWER_BOUND) if s in names] + ig2
+
+
+def _spread(df, keys, value):
+    return (df.groupby(keys, dropna=False)[value]
+            .agg(n_pairs="count", median="median", mean="mean",
+                 q_low=lambda x: x.quantile(LOWER_Q),
+                 q_high=lambda x: x.quantile(HIGH_Q))
+            .reset_index())
+
+
+def _err(df, scale=1.0):
+    lo = (df["median"] - df["q_low"]).clip(lower=0).to_numpy() * scale
+    hi = (df["q_high"] - df["median"]).clip(lower=0).to_numpy() * scale
+    return np.vstack([lo, hi])
+
+
+def _vlines(ax):
+    ax.axvline(IRS_SWITCH_YEAR, color="#cc4444", ls="--", lw=0.9)
     for y in IG2_CAMPAIGN_YEARS:
-        ax.axvline(y + (IG2_CAMPAIGN_DOY - 1) / DAYS_PER_YEAR, color="tab:blue",
-                   linestyle=":", linewidth=0.9, alpha=0.7)
+        ax.axvline(y + (IG2_CAMPAIGN_DOY - 1) / DAYS_PER_YEAR, color="#4477aa",
+                   ls=":", lw=0.9)
 
 
-def plot_inset_by_scenario(df, channels, path, title, x_col="model_time"):
-    channels = [c for c in channels if c in df.columns]
-    if not channels:
-        return
-    styles, order = scenario_styles(df)
-    ncols = 2
-    nrows = int(np.ceil(len(channels) / ncols))
-    fig, axes = plt.subplots(nrows, ncols, figsize=(14, 4 * nrows), squeeze=False)
-    axes = axes.ravel()
-    for ax in axes[len(channels):]:
-        ax.set_visible(False)
-    for ax, ch in zip(axes, channels):
-        for scen in order:
-            g = df[df["scenario"] == scen].groupby(x_col)[ch]
-            med = g.median()
-            ax.plot(med.index, med.values, label=scen, **styles[scen])
-            if scen == BASELINE:
-                ax.fill_between(med.index, g.quantile(LOWER_Q).values,
-                                g.quantile(HIGH_Q).values, color="black", alpha=0.10)
-        _mark_campaigns(ax)
-        ax.set_title(ch)
-        ax.set_xlabel("Model year (365-day model calendar)")
-        ax.grid(True, linestyle="--", alpha=0.3)
-    axes[0].legend(fontsize=7, ncol=2, loc="best")
-    fig.suptitle(f"{title}\nmedian across pickup states; band = {int(LOWER_Q*100)}-"
-                 f"{int(HIGH_Q*100)}% of {BASELINE}; red = IRS switch, blue = IG2 campaigns")
+def _save(fig, path):
     fig.tight_layout()
-    fig.savefig(path, dpi=200, bbox_inches="tight")
+    fig.savefig(path, dpi=200)
     plt.close(fig)
 
 
-def plot_annual_impact(annual_summary, path, title):
-    if annual_summary is None or annual_summary.empty:
+# =============================================================================
+# PER-ASSUMPTION OUTPUTS: outcomes, cases averted, effective use
+# =============================================================================
+
+def arms_for(win, usage):
+    """BAU + NO_IRS + the IG2 arms of ONE net-use assumption."""
+    keep = ((win["scenario"] == BASELINE) | (win["scenario"] == LOWER_BOUND) |
+            ((win["scenario_kind"] == "ig2") & (win["ig2_usage"] == usage)))
+    return win[keep].copy()
+
+
+def outcome_summary(arms, metrics):
+    long = arms.melt(id_vars=["pair_id", "scenario", "ig2_coverage"],
+                     value_vars=metrics, var_name="metric", value_name="value")
+    return _spread(long, ["scenario", "ig2_coverage", "metric"], "value")
+
+
+def plot_outcomes(summ, path, title):
+    panels = [("incidence_per_1000_py", "Clinical incidence (per 1000 person-years)"),
+              ("pfpr_all_ages", "PfPR, all ages (%)"),
+              ("U5_clinical_incidence_per_1000_py", "Under-5 clinical incidence (per 1000 py)"),
+              ("U5_pfpr", "Under-5 PfPR (%)")]
+    panels = [p for p in panels if p[0] in set(summ["metric"])]
+    if not panels:
         return
-    styles, order = scenario_styles(annual_summary)
-    fig, ax = plt.subplots(figsize=(11, 6))
-    for scen in order:
-        g = annual_summary[annual_summary["scenario"] == scen].sort_values("Year")
-        if g.empty:
+    order = _scenario_order(summ["scenario"])
+    colors = _arm_colors(order)
+    fig, axes = plt.subplots(1, len(panels), figsize=(5.2 * len(panels), 4.9), squeeze=False)
+    for ax, (m, lab) in zip(axes[0], panels):
+        scale = 100.0 if "pfpr" in m.lower() else 1.0
+        s = (summ[summ["metric"] == m].drop_duplicates("scenario")
+             .set_index("scenario").reindex(order).dropna(subset=["median"]))
+        x = np.arange(len(s))
+        ax.bar(x, s["median"] * scale, yerr=_err(s, scale), capsize=4,
+               color=[colors[i] for i in s.index])
+        ax.set_xticks(x)
+        ax.set_xticklabels([_arm_label(i, c) for i, c in zip(s.index, s["ig2_coverage"])],
+                           rotation=45, ha="right")
+        ax.set_ylabel(lab)
+    fig.suptitle(f"{title}\nmedian and {int(LOWER_Q * 100)}-{int(HIGH_Q * 100)}th percentile "
+                 f"across pickup states, {ANALYSIS_START_YEAR}-{ANALYSIS_END_YEAR}",
+                 fontsize=10)
+    _save(fig, path)
+
+
+def cases_averted_pairs(arms):
+    p = paired_impact(arms, BASELINE, ["clinical_cases"])
+    if p is None:
+        return None
+    p["cases_averted"] = -p["abs_diff"]          # positive = fewer cases than BAU
+    p["pct_averted"] = -p["rel_change"] * 100.0
+    return p
+
+
+def cases_averted_summary(p):
+    keys = ["scenario", "ig2_coverage"]
+    a = _spread(p, keys, "cases_averted")
+    b = _spread(p, keys, "pct_averted")
+    return a.merge(b, on=keys, suffixes=("", "_pct"))
+
+
+def annual_cases_averted(annual_arms):
+    a = annual_arms[annual_arms["Year"].isin(analysis_years())]
+    ref = _reference_table(a, BASELINE, ["clinical_cases"], extra_keys=["Year"])
+    if ref is None:
+        return None
+    m = a[a["scenario"] != BASELINE].merge(ref, on=["pair_id", "Year"], how="inner")
+    m["cases_averted"] = m["clinical_cases__ref"] - m["clinical_cases"]
+    return _spread(m, ["scenario", "ig2_coverage", "Year"], "cases_averted")
+
+
+def plot_cases_averted(total, annual_sum, path, title):
+    two = annual_sum is not None and not annual_sum.empty
+    fig, axes = plt.subplots(1, 2 if two else 1, figsize=(12 if two else 6, 5.0),
+                             squeeze=False)
+    ax = axes[0][0]
+    t = total.sort_values("ig2_coverage")
+    colors = _arm_colors(t["scenario"])
+    ax.bar(np.arange(len(t)), t["median"], yerr=_err(t), capsize=4,
+           color=[colors[s] for s in t["scenario"]])
+    ax.set_xticks(np.arange(len(t)))
+    ax.set_xticklabels([_arm_label(s, c) for s, c in zip(t["scenario"], t["ig2_coverage"])],
+                       rotation=45, ha="right")
+    ax.axhline(0, color="k", lw=0.8)
+    ax.set_ylabel(f"Cumulative cases averted vs continued IRS\n"
+                  f"{ANALYSIS_START_YEAR}-{ANALYSIS_END_YEAR}")
+    if two:
+        ax = axes[0][1]
+        scen = _scenario_order(annual_sum["scenario"])
+        colors = _arm_colors(scen)
+        for i, sc in enumerate(scen):
+            s = annual_sum[annual_sum["scenario"] == sc].sort_values("Year")
+            off = (i - (len(scen) - 1) / 2) * 0.1
+            ax.errorbar(s["Year"] + off, s["median"], yerr=_err(s), marker="o", capsize=3,
+                        color=colors[sc], label=_arm_label(sc))
+        ax.axhline(0, color="k", lw=0.8)
+        ax.set_xlabel("Year")
+        ax.set_ylabel("Annual cases averted vs continued IRS")
+        ax.legend(frameon=False, fontsize=8)
+    fig.suptitle(f"{title}\nmedian, {int(LOWER_Q * 100)}-{int(HIGH_Q * 100)}th percentile "
+                 f"across pickup states (paired with BAU)", fontsize=10)
+    _save(fig, path)
+
+
+def effuse_outcomes(arms, eff):
+    metrics = [m for m in ("incidence_per_1000_py", "pfpr_all_ages", "clinical_cases")
+               if m in arms.columns]
+    p = paired_impact(arms, BASELINE, metrics)
+    if p is None:
+        return None
+    p = p[p["scenario_kind"] == "ig2"].copy()
+    if p.empty:
+        return None
+    # clinical cases: cases averted (positive = better); others: % change vs BAU.
+    p["value"] = np.where(p["metric"] == "clinical_cases", -p["abs_diff"],
+                          p["rel_change"] * 100.0)
+    s = _spread(p, ["ig2_usage", "ig2_coverage", "metric"], "value")
+    return s.merge(eff[["ig2_usage", "ig2_coverage", "net_retention", "age_multiplier",
+                        "season_multiplier", "effective_use_time_avg"]],
+                   on=["ig2_usage", "ig2_coverage"], how="left")
+
+
+def plot_effuse(s, path, title):
+    panels = [("incidence_per_1000_py",
+               "Change in clinical incidence vs continued IRS (%)\n(below 0 = better)"),
+              ("pfpr_all_ages",
+               "Change in PfPR vs continued IRS (%)\n(below 0 = better)"),
+              ("clinical_cases",
+               "Cumulative cases averted vs continued IRS\n(above 0 = better)")]
+    panels = [p for p in panels if p[0] in set(s["metric"])]
+    if not panels:
+        return
+    fig, axes = plt.subplots(1, len(panels), figsize=(5.6 * len(panels), 5.0), squeeze=False)
+    for ax, (m, lab) in zip(axes[0], panels):
+        for usage, g in s[s["metric"] == m].groupby("ig2_usage"):
+            g = g.sort_values("effective_use_time_avg")
+            x = g["effective_use_time_avg"].to_numpy() * 100
+            ax.errorbar(x, g["median"], yerr=_err(g), marker="o", capsize=4,
+                        label=USAGE_TITLES.get(usage, usage))
+            for xi, yi, c in zip(x, g["median"], g["ig2_coverage"]):
+                ax.annotate(f"c={int(round(c * 100))}%", (xi, yi),
+                            textcoords="offset points", xytext=(4, 6), fontsize=7)
+        ax.axhline(0, color="k", lw=0.8)
+        ax.set_xlabel("Effective-use coverage, time-averaged over the net cycle (%)")
+        ax.set_ylabel(lab)
+    axes[0][0].legend(frameon=False, fontsize=7)
+    fig.suptitle(f"{title}\nmedian, {int(LOWER_Q * 100)}-{int(HIGH_Q * 100)}th percentile "
+                 f"across pickup states", fontsize=10)
+    _save(fig, path)
+
+
+def monthly_series(df, time_col, value_cols):
+    """Median and spread across pairs per arm and time."""
+    out = {}
+    keys = ["scenario", "ig2_coverage", "ig2_usage", time_col]
+    for c in value_cols:
+        if c in df.columns:
+            out[c] = _spread(df, keys, c)
+    return out
+
+
+def plot_timeseries(ts, time_col, usage, ylabel, path, title, scale=1.0):
+    is_ig2 = ts["scenario"].astype(str).str.startswith("IG2_")
+    sel = ts[ts["scenario"].isin([BASELINE, LOWER_BOUND]) | (is_ig2 & (ts["ig2_usage"] == usage))]
+    if sel.empty:
+        return
+    colors = _arm_colors(sel["scenario"].unique())
+    fig, ax = plt.subplots(figsize=(10, 5.2))
+    for sc in _scenario_order(sel["scenario"].unique()):
+        g = sel[sel["scenario"] == sc].sort_values(time_col)
+        ls = "--" if sc == LOWER_BOUND else "-"
+        ax.plot(g[time_col], g["median"] * scale, color=colors[sc], ls=ls, lw=1.6)
+        ax.fill_between(g[time_col], g["q_low"] * scale, g["q_high"] * scale,
+                        color=colors[sc], alpha=0.12, lw=0)
+        ax.annotate(_arm_label(sc), (g[time_col].iloc[-1], g["median"].iloc[-1] * scale),
+                    xytext=(4, 0), textcoords="offset points", fontsize=7, va="center",
+                    color=colors[sc])
+    _vlines(ax)
+    ax.margins(x=0.12)
+    ax.set_xlabel("Model year (flat 365-day calendar)")
+    ax.set_ylabel(ylabel)
+    ax.set_title(f"{title}\nmedian and {int(LOWER_Q * 100)}-{int(HIGH_Q * 100)}th percentile "
+                 f"across pickup states; red dashed = IRS switch, blue dotted = IG2 campaigns",
+                 fontsize=9)
+    _save(fig, path)
+
+
+def plot_annual_impact(ann, usage, path, title):
+    is_ig2 = ann["scenario"].astype(str).str.startswith("IG2_")
+    sel = ann[(ann["reference"] == BASELINE) &
+              (ann["scenario"].eq(LOWER_BOUND) | (is_ig2 & (ann["ig2_usage"] == usage)))]
+    if sel.empty:
+        return
+    colors = _arm_colors(sel["scenario"].unique())
+    fig, ax = plt.subplots(figsize=(9, 5.2))
+    scen = _scenario_order(sel["scenario"].unique())
+    for i, sc in enumerate(scen):
+        g = sel[sel["scenario"] == sc].sort_values("Year")
+        med = g["median_rel_change"].to_numpy() * 100
+        err = np.vstack([(g["median_rel_change"] - g["q_low_rel_change"]).clip(lower=0) * 100,
+                         (g["q_high_rel_change"] - g["median_rel_change"]).clip(lower=0) * 100])
+        off = (i - (len(scen) - 1) / 2) * 0.08
+        ax.errorbar(g["Year"] + off, med, yerr=err, marker="o", capsize=3,
+                    color=colors[sc], ls="--" if sc == LOWER_BOUND else "-")
+        ax.annotate(_arm_label(sc), (g["Year"].iloc[-1] + off, med[-1]),
+                    xytext=(5, 0), textcoords="offset points", fontsize=7, va="center",
+                    color=colors[sc])
+    ax.axhline(0, color="k", lw=0.8)
+    ax.margins(x=0.12)
+    ax.set_xlabel("Year")
+    ax.set_ylabel("Change in clinical incidence vs continued IRS (%)\n(below 0 = better)")
+    ax.set_title(f"{title}\nmedian, {int(LOWER_Q * 100)}-{int(HIGH_Q * 100)}th percentile "
+                 f"across pickup states (paired with BAU)", fontsize=9)
+    _save(fig, path)
+
+
+def write_usage_subfolders(out_dir, ctx):
+    """One sub folder per net-use assumption, plus a comparison folder."""
+    annual, win, eff, ann_summ = ctx["annual"], ctx["win"], ctx["eff"], ctx["ann_summ"]
+    metrics = [m for m in METRICS_BASE + METRICS_U5 if m in win.columns]
+    both = []
+    for usage, folder in USAGE_FOLDERS.items():
+        arms = arms_for(win, usage)
+        if not ((arms["scenario_kind"] == "ig2") & (arms["ig2_usage"] == usage)).any():
+            print(f"NOTE: no IG2 arms with ig2_usage={usage}; {folder} skipped.")
             continue
-        ax.plot(g["Year"], g["median_rel_change"] * 100, marker="o", ms=3,
-                label=scen, **styles[scen])
-    ax.axhline(0, color="black", linewidth=0.8)
-    ax.axvline(IRS_SWITCH_YEAR, color="red", linestyle="--", linewidth=0.9)
-    ax.set_xlabel("Model year")
-    ax.set_ylabel(f"Median paired change in annual incidence vs {BASELINE} (%)")
-    ax.set_title(title)
-    ax.grid(True, linestyle="--", alpha=0.3)
-    ax.legend(fontsize=7, ncol=2)
-    fig.tight_layout()
-    fig.savefig(path, dpi=200, bbox_inches="tight")
-    plt.close(fig)
+        d = os.path.join(out_dir, folder)
+        os.makedirs(d, exist_ok=True)
+        title = USAGE_TITLES[usage]
+
+        # 1. estimated clinical incidence and PfPR
+        summ = outcome_summary(arms, metrics)
+        summ.to_csv(os.path.join(d, "Estimated_outcomes.csv"), index=False)
+        plot_outcomes(summ, os.path.join(d, "Estimated_incidence_PfPR.png"), title)
+
+        # 2. cases averted vs continued IRS, with error bars
+        p = cases_averted_pairs(arms)
+        if p is not None:
+            tot = cases_averted_summary(p)
+            tot.to_csv(os.path.join(d, "CasesAverted_vs_BAU.csv"), index=False)
+            ann = annual_cases_averted(
+                annual[annual["scenario"].isin(arms["scenario"].unique())])
+            if ann is not None:
+                ann = ann[ann["scenario"].astype(str).str.startswith("IG2_")]
+                ann.to_csv(os.path.join(d, "CasesAverted_annual_vs_BAU.csv"), index=False)
+            plot_cases_averted(tot[tot["scenario"].astype(str).str.startswith("IG2_")],
+                               ann, os.path.join(d, "CasesAverted_vs_BAU.png"), title)
+
+        # 3. effective-use coverage vs outcomes relative to continued IRS
+        eo = effuse_outcomes(arms, eff)
+        if eo is not None:
+            eo.to_csv(os.path.join(d, "EffectiveUse_vs_outcomes.csv"), index=False)
+            plot_effuse(eo, os.path.join(d, "EffectiveUse_vs_outcomes.png"), title)
+            both.append(eo)
+        eff[eff["ig2_usage"] == usage].to_csv(os.path.join(d, "IG2_EffectiveUse.csv"),
+                                              index=False)
+
+        # 4. time series, annual impact, net-use diagnostic
+        for name, (ts, tcol, ylabel, scale) in ctx["series"].items():
+            plot_timeseries(ts, tcol, usage, ylabel,
+                            os.path.join(d, f"Timeseries_{name}.png"), title, scale)
+        if ann_summ is not None:
+            plot_annual_impact(ann_summ, usage, os.path.join(d, "AnnualImpact_incidence.png"),
+                               title)
+        if ctx.get("netuse") is not None:
+            plot_timeseries(ctx["netuse"], "model_time", usage,
+                            "Bednet_Using events per day (diagnostic; counts every net)",
+                            os.path.join(d, "NetUse_monthly.png"), title)
+        print(f"Wrote {d}")
+
+    if len(both) > 1:
+        d = os.path.join(out_dir, COMPARISON_FOLDER)
+        os.makedirs(d, exist_ok=True)
+        allv = pd.concat(both, ignore_index=True)
+        allv.to_csv(os.path.join(d, "EffectiveUse_vs_outcomes_both.csv"), index=False)
+        plot_effuse(allv, os.path.join(d, "EffectiveUse_vs_outcomes_both.png"),
+                    "Effective-use coverage and malaria outcomes relative to continued IRS")
+        print(f"Wrote {d}")
 
 
-def plot_coverage_response(resp, thr, path, title):
-    if resp is None or resp.empty:
-        return
-    fig, ax = plt.subplots(figsize=(10, 6))
-    for key, g in resp.groupby("ig2_kill_key"):
+def plot_coverage_response(resp, path):
+    fig, axes = plt.subplots(1, 2, figsize=(12, 5.0))
+    for usage, g in resp.groupby("ig2_usage"):
         g = g.sort_values("ig2_coverage")
-        y = g["median_rel_change"].to_numpy() * 100
-        lo = g["q_low_rel_change"].to_numpy() * 100
-        hi = g["q_high_rel_change"].to_numpy() * 100
-        ax.errorbar(g["ig2_coverage"], y, yerr=[np.clip(y - lo, 0, None), np.clip(hi - y, 0, None)],
-                    marker="o", capsize=3, label=f"IG2 ({key}); median, {int(LOWER_Q*100)}-{int(HIGH_Q*100)}%")
-    ax.axhline(NONINFERIORITY_MARGIN * 100, color="black", linewidth=1,
-               label=f"criterion ({THRESHOLD_RULE} <= {NONINFERIORITY_MARGIN*100:g}%)")
-    if thr is not None:
-        for r in thr.itertuples():
-            if not np.isnan(r.min_coverage_robust):
-                ax.axvline(r.min_coverage_robust, color="red", linestyle="--", alpha=0.7,
-                           label=f"minimum c = {r.min_coverage_robust:.2f} ({r.ig2_kill_key})")
-    ax.set_xlabel("IG2 coverage distributed per campaign (c)")
-    ax.set_ylabel(f"Paired change in {PRIMARY_METRIC} vs {BASELINE} (%)")
-    f = (resp["effective_use_time_avg"] / resp["ig2_coverage"]).dropna()
-    if len(f):
-        factor = float(f.iloc[0])
-        sec = ax.secondary_xaxis("top", functions=(lambda x: x * factor, lambda x: x / factor))
-        sec.set_xlabel("Time-averaged effective use (c x retention x age x season)")
-    ax.set_title(title)
-    ax.grid(True, linestyle="--", alpha=0.3)
-    ax.legend(fontsize=8)
-    fig.tight_layout()
-    fig.savefig(path, dpi=200, bbox_inches="tight")
-    plt.close(fig)
-
-
-def plot_pfpr_by_agebin(pf, path, title):
-    if pf.empty or "PfPR" not in pf.columns:
-        return
-    styles, order = scenario_styles(pf)
-    bins = sorted(pf["agebin"].dropna().unique())
-    ncols = 2
-    nrows = int(np.ceil(len(bins) / ncols))
-    fig, axes = plt.subplots(nrows, ncols, figsize=(14, 4 * nrows), squeeze=False)
-    axes = axes.ravel()
-    for ax in axes[len(bins):]:
-        ax.set_visible(False)
-    for ax, b in zip(axes, bins):
-        sub = pf[pf["agebin"] == b]
-        for scen in order:
-            med = (sub[sub["scenario"] == scen]
-                   .groupby("interval_midpoint_model_time")["PfPR"].median())
-            ax.plot(med.index, med.values, label=scen, **styles[scen])
-        _mark_campaigns(ax)
-        ax.set_title(f"Age bin up to {b:g} years")
-        ax.set_xlabel("Model time")
-        ax.set_ylabel("PfPR")
-        ax.set_xlim(PROJ_START_YEAR, PROJ_END_YEAR + 1)
-        ax.grid(True, linestyle="--", alpha=0.3)
-    axes[0].legend(fontsize=7, ncol=2)
-    fig.suptitle(title)
-    fig.tight_layout()
-    fig.savefig(path, dpi=200, bbox_inches="tight")
-    plt.close(fig)
-
-
-def plot_event_counts(events, path, title):
-    names = [e for e in PLOT_EVENTS if e in set(events["Event_Name"])]
-    if not names:
-        return
-    per_sim = (events.dropna(subset=["Year"]).groupby(["sim_id", "scenario", "Year", "Event_Name"],
-                                                     as_index=False)["Count"].sum())
-    styles, order = scenario_styles(events)
-    ncols = 2
-    nrows = int(np.ceil(len(names) / ncols))
-    fig, axes = plt.subplots(nrows, ncols, figsize=(14, 4 * nrows), squeeze=False)
-    axes = axes.ravel()
-    for ax in axes[len(names):]:
-        ax.set_visible(False)
-    for ax, name in zip(axes, names):
-        sub = per_sim[per_sim["Event_Name"] == name]
-        for scen in order:
-            m = sub[sub["scenario"] == scen].groupby("Year")["Count"].mean()
-            if len(m):
-                ax.plot(m.index, m.values, marker="o", ms=3, label=scen, **styles[scen])
-        ax.set_title(name)
-        ax.set_xlabel("Model year")
-        ax.set_ylabel("Mean events per simulation")
-        ax.grid(True, linestyle="--", alpha=0.3)
-    axes[0].legend(fontsize=7, ncol=2)
-    fig.suptitle(title)
-    fig.tight_layout()
-    fig.savefig(path, dpi=200, bbox_inches="tight")
-    plt.close(fig)
+        med = g["rule_statistic"].to_numpy() * 100
+        err = np.vstack([(g["median_rel_change"] - g["q_low_rel_change"]).clip(lower=0) * 100,
+                         (g["q_high_rel_change"] - g["median_rel_change"]).clip(lower=0) * 100])
+        for ax, x, xl in ((axes[0], g["ig2_coverage"] * 100, "IG2 distribution coverage c (%)"),
+                          (axes[1], g["effective_use_time_avg"] * 100,
+                           "Effective-use coverage, time-averaged (%)")):
+            ax.errorbar(x, med, yerr=err, marker="o", capsize=4,
+                        label=USAGE_TITLES.get(usage, usage))
+            ax.set_xlabel(xl)
+    for ax in axes:
+        ax.axhline(NONINFERIORITY_MARGIN * 100, color="k", ls="--", lw=0.9)
+        ax.set_ylabel(f"Change in {PRIMARY_METRIC} vs continued IRS (%)\n"
+                      f"({THRESHOLD_RULE} rule; at or below dashed line = maintains or reduces)")
+    axes[0].legend(frameon=False, fontsize=8)
+    _save(fig, path)
 
 
 # =============================================================================
 # STAGE 2: DRIVER
 # =============================================================================
 
-def make_outputs(expt_name, work_dir):
-    out_dir = output_dir(work_dir, expt_name)
-    inset_path = csv_path(out_dir, "All_Age_InsetChart")
-    if not os.path.isfile(inset_path):
-        print(f"No InsetChart csv at {inset_path}; nothing to post-process.")
-        return
+def load_inputs(out_dir):
+    tables = {}
+    for key, prefix, required in (("inset", "All_Age_InsetChart", True),
+                                  ("pf", "PfPR_ClinicalIncidence_monthly", True),
+                                  ("events", "EventCounts", False),
+                                  ("netuse", "NetUse_monthly", False)):
+        path = csv_path(out_dir, prefix)
+        if os.path.isfile(path):
+            tables[key] = load_table(path)
+        elif required:
+            raise FileNotFoundError(f"{path} not found. Run without --skip-analysis first.")
+        else:
+            tables[key] = None
+    if (tables["inset"]["scenario"] == "").all():
+        raise ValueError(
+            "No scenario tags in the analyzer output. EXPERIMENTS/--experiment-id must be "
+            "the SCENARIO experiment written by run_scenarios_UWR.py, not the pickup "
+            "experiment.")
+    return tables
 
+
+def post_process(out_dir):
+    t = load_inputs(out_dir)
+    inset, pf, events, netuse = t["inset"], t["pf"], t["events"], t["netuse"]
     years = analysis_years()
-    inset = load_table(inset_path)
-    print(f"\nScenarios found: {sorted(inset['scenario'].unique())}")
-    print(f"Pairs (pickup states): {inset['pair_id'].nunique()}; "
-          f"simulations: {inset['sim_id'].nunique()}")
-    if BASELINE not in set(inset["scenario"]):
-        print(f"WARNING: baseline arm {BASELINE} not found; paired outputs will be empty.")
+    present = sorted(inset["scenario"].unique())
+    print(f"\nArms found: {present}")
+    if BASELINE not in present:
+        raise ValueError(f"Baseline arm '{BASELINE}' not found; found {present}.")
 
-    # ---- annual and window burden -------------------------------------------
+    # ---- annual burden and pairing check ----
     annual = annual_burden(inset)
     annual.to_csv(csv_path(out_dir, "Scenario_AnnualBurden"), index=False)
-    incomplete = annual.loc[~annual["is_complete_year"], "sim_id"].nunique()
-    if incomplete:
-        print(f"WARNING: {incomplete} simulation(s) have incomplete model years "
-              f"(partial runs); incidence is annualised.")
+    pc = pairing_check(annual)
+    if pc is not None:
+        pc.to_csv(csv_path(out_dir, "PairingCheck"), index=False)
 
-    pf_path = csv_path(out_dir, "PfPR_ClinicalIncidence_monthly")
-    pf = load_table(pf_path) if os.path.isfile(pf_path) else None
-
+    # ---- window metrics (all ages + under five) ----
     win = window_metrics(annual, years)
-    metrics = list(METRICS_BASE)
-    if pf is not None:
-        u5 = u5_window_metrics(pf, years)
-        if u5 is not None:
-            win = win.merge(u5, on="sim_id", how="left")
-            metrics += METRICS_U5
-    metrics = [m for m in metrics if m in win.columns]
-    win.to_csv(csv_path(out_dir, "Scenario_WindowMetrics"), index=False)
+    u5 = u5_window_metrics(pf, years)
+    if u5 is not None:
+        win = win.merge(u5, on="sim_id", how="left")
+    metrics = [m for m in METRICS_BASE + METRICS_U5 if m in win.columns]
+    print(f"Analysis window {years[0]}-{years[-1]}; {win['pair_id'].nunique()} pickup states; "
+          f"metrics: {metrics}")
 
-    # ---- pairing check and paired impact ------------------------------------
-    chk = pairing_check(annual)
-    if chk is not None:
-        chk.to_csv(csv_path(out_dir, "PairingCheck"), index=False)
+    # ---- paired impact ----
+    refs = [BASELINE, LOWER_BOUND] + [r for r in IRS_REFERENCES if r not in (BASELINE, LOWER_BOUND)]
+    pieces = [paired_impact(win, r, metrics) for r in refs]
+    pieces = [p for p in pieces if p is not None]
+    paired = pd.concat(pieces, ignore_index=True)
+    paired.to_csv(csv_path(out_dir, "Scenario_PairedImpact"), index=False)
+    summary = summarise_impact(paired)
+    summary.to_csv(csv_path(out_dir, "Scenario_ImpactSummary"), index=False)
 
-    paired = [p for p in (paired_impact(win, BASELINE, metrics),
-                          paired_impact(win, LOWER_BOUND, metrics)) if p is not None]
-    summary = None
-    if paired:
-        paired = pd.concat(paired, ignore_index=True)
-        paired.to_csv(csv_path(out_dir, "Scenario_PairedImpact"), index=False)
-        summary = summarise_impact(paired)
-        summary.to_csv(csv_path(out_dir, "Scenario_ImpactSummary"), index=False)
-        main_rows = summary[(summary["reference"] == BASELINE) &
-                            (summary["metric"] == PRIMARY_METRIC)]
-        print(f"\nPaired change in {PRIMARY_METRIC} vs {BASELINE}, "
-              f"{years[0]}-{years[-1]} (median [{int(LOWER_Q*100)}-{int(HIGH_Q*100)}%]):")
-        for r in main_rows.itertuples():
-            print(f"  {r.scenario:<16} {r.median_rel_change*100:+7.1f}% "
-                  f"[{r.q_low_rel_change*100:+.1f}, {r.q_high_rel_change*100:+.1f}]  "
-                  f"n={r.n_pairs}")
+    ann_pieces = [annual_paired_summary(annual, r) for r in refs]
+    ann_pieces = [a for a in ann_pieces if a is not None]
+    ann_summ = pd.concat(ann_pieces, ignore_index=True) if ann_pieces else None
+    if ann_summ is not None:
+        ann_summ.to_csv(csv_path(out_dir, "Scenario_AnnualImpact_summary"), index=False)
 
-    annual_summary = annual_paired_summary(annual, BASELINE)
-    if annual_summary is not None:
-        annual_summary.to_csv(csv_path(out_dir, "Scenario_AnnualImpact_summary"), index=False)
+    # ---- effective use per net-use assumption ----
+    ig2_win = win[win["scenario_kind"] == "ig2"]
+    usages = sorted(ig2_win["ig2_usage"].unique())
+    covs = sorted(ig2_win["ig2_coverage"].dropna().unique())
+    age_w = age_weights_from_reports(pf, years)
+    factors = {u: effective_use_factors(age_w, u) for u in usages}
+    eff = pd.concat([effective_use_table(covs, factors[u], u) for u in usages],
+                    ignore_index=True) if usages else pd.DataFrame()
+    eff.to_csv(csv_path(out_dir, "IG2_EffectiveUse"), index=False)
+    for u in usages:
+        f = factors[u]
+        print(f"  {u}: retention {f['retention']:.3f}, age x {f['age_multiplier']:.3f}, "
+              f"season x {f['season_multiplier']:.3f}")
 
-    # ---- effective use and threshold ----------------------------------------
-    coverages = sorted(inset.loc[inset["scenario_kind"] == "ig2", "ig2_coverage"].dropna().unique())
-    thr, resp = None, None
-    if coverages:
-        weights = age_weights_from_reports(pf, years)
-        factors = None
-        try:
-            factors = effective_use_factors(weights)
-        except (FileNotFoundError, ValueError) as exc:
-            print(f"WARNING: effective use not computed with usage curves ({exc}); "
-                  f"using retention only.")
-        if factors is None:
-            cycle = campaign_cycle_days()
-            t = np.arange(cycle) + 0.5
-            ret = float(np.exp(-(t / IG2_DISCARD_L) ** IG2_DISCARD_K).mean())
-            factors = dict(cycle_days=cycle, retention=ret, age_multiplier=np.nan,
-                           season_multiplier=np.nan, season_at_distribution=np.nan)
-        eff = effective_use_table(coverages, factors)
-        eff.to_csv(csv_path(out_dir, "IG2_EffectiveUse"), index=False)
-        print(f"\nIG2 effective use (cycle {factors['cycle_days']} d): retention "
-              f"{factors['retention']:.3f}, age multiplier {factors['age_multiplier']:.3f}, "
-              f"season multiplier {factors['season_multiplier']:.3f}")
-        print(eff[["ig2_coverage", "effective_use_time_avg",
-                   "effective_use_at_distribution"]].to_string(index=False,
-              float_format=lambda v: f"{v:.3f}"))
+    # ---- threshold ----
+    resp = coverage_response(summary, eff) if not eff.empty else None
+    if resp is not None:
+        resp.to_csv(csv_path(out_dir, "IG2_CoverageResponse"), index=False)
+        minc = minimum_coverage(resp)
+        minc.to_csv(csv_path(out_dir, "IG2_MinimumCoverage"), index=False)
+        plot_coverage_response(resp, os.path.join(out_dir, "IG2_CoverageResponse_scenarios.png"))
+        print("\nMinimum IG2 distribution coverage that maintains or reduces "
+              f"{PRIMARY_METRIC} (rule: {THRESHOLD_RULE}, margin {NONINFERIORITY_MARGIN:g}):")
+        for r in minc.itertuples():
+            print(f"  {r.ig2_kill_key}/{r.ig2_usage}: min c = {r.min_coverage_robust}, "
+                  f"effective use at min = {r.effective_use_time_avg_at_min}"
+                  f"{'  [' + r.note + ']' if r.note else ''}")
+        tgt = target_coverage_table(summary, factors)
+        tgt.to_csv(csv_path(out_dir, "IG2_TargetCoverage"), index=False)
+    else:
+        print("NOTE: no IG2 arms vs BAU; threshold tables skipped.")
 
-        if summary is not None:
-            resp = coverage_response(summary, eff)
-            if resp is not None:
-                resp.to_csv(csv_path(out_dir, "IG2_CoverageResponse"), index=False)
-                thr = minimum_coverage(resp)
-                thr.to_csv(csv_path(out_dir, "IG2_MinimumCoverage"), index=False)
-                print(f"\nMinimum IG2 coverage that maintains or reduces {PRIMARY_METRIC} "
-                      f"vs {BASELINE} ({THRESHOLD_RULE} rule, margin {NONINFERIORITY_MARGIN:g}):")
-                print(thr.to_string(index=False))
+    # ---- realized distribution ----
+    real = realized_distribution(events, annual)
+    if real is not None:
+        real.to_csv(csv_path(out_dir, "IG2_RealizedDistribution"), index=False)
 
-    # ---- events --------------------------------------------------------------
-    ev_path = csv_path(out_dir, "EventCounts")
-    events = load_table(ev_path) if os.path.isfile(ev_path) else None
-    if events is not None:
-        real = realized_distribution(events, annual)
-        if real is not None:
-            real.to_csv(csv_path(out_dir, "IG2_RealizedDistribution"), index=False)
-            print("\nRealized IG2 distribution (nets issued per person in campaign years):")
-            print(real.to_string(index=False, float_format=lambda v: f"{v:.3f}"))
+    # ---- time series ----
+    inset = inset.copy()
+    if {"New Clinical Cases_sum", "Statistical Population"} <= set(inset.columns):
+        inset["incidence_monthly_per_1000_py"] = (
+            inset["New Clinical Cases_sum"] / inset["Statistical Population"]
+            * 1000.0 * DAYS_PER_YEAR / inset["days_simulated"])
+    series = {}
+    s = monthly_series(inset, "model_time", ["Blood Smear Parasite Prevalence"])
+    if s:
+        series["PfPR_all_ages"] = (s["Blood Smear Parasite Prevalence"], "model_time",
+                                   "PfPR, all ages (%)", 100.0)
+    s = monthly_series(inset, "model_time", ["incidence_monthly_per_1000_py"])
+    if s:
+        series["Incidence_all_ages"] = (s["incidence_monthly_per_1000_py"], "model_time",
+                                        "Clinical incidence, all ages (per 1000 py)", 1.0)
+    u5i = u5_interval_table(pf)
+    if u5i is not None:
+        s = monthly_series(u5i, "interval_midpoint_model_time", ["U5_pfpr"])
+        series["PfPR_under5"] = (s["U5_pfpr"], "interval_midpoint_model_time",
+                                 "Under-5 PfPR (%)", 100.0)
+        s = monthly_series(u5i, "interval_midpoint_model_time", ["U5_incidence_per_1000_py"])
+        series["Incidence_under5"] = (s["U5_incidence_per_1000_py"],
+                                      "interval_midpoint_model_time",
+                                      "Under-5 clinical incidence (per 1000 py)", 1.0)
+    netuse_ts = None
+    if netuse is not None and "Bednet_Using" in netuse.columns:
+        netuse_ts = monthly_series(netuse, "model_time", ["Bednet_Using"])["Bednet_Using"]
+        netuse_ts.to_csv(csv_path(out_dir, "NetUse_summary"), index=False)
 
-    # ---- plots ----------------------------------------------------------------
-    plot_inset_by_scenario(inset, [c for c in INSET_CHANNELS if c in inset.columns],
-                           os.path.join(out_dir, f"InsetChart_{STEP}_byScenario.png"),
-                           f"{expt_name}: monthly InsetChart summaries")
-    plot_annual_impact(annual_summary, os.path.join(out_dir, f"AnnualImpact_{STEP}.png"),
-                       f"{expt_name}: annual incidence vs {BASELINE}")
-    plot_coverage_response(resp, thr, os.path.join(out_dir, f"IG2_CoverageResponse_{STEP}.png"),
-                           f"{expt_name}: IG2 coverage response ({years[0]}-{years[-1]})")
-    if pf is not None:
-        plot_pfpr_by_agebin(pf, os.path.join(out_dir, f"PfPR_{STEP}_byAgeBin.png"),
-                            f"{expt_name}: PfPR by age bin and scenario")
-    if events is not None:
-        plot_event_counts(events, os.path.join(out_dir, f"EventCounts_{STEP}_byYear.png"),
-                          f"{expt_name}: events per simulation by model year")
-    nu_path = csv_path(out_dir, "NetUse_monthly")
-    if os.path.isfile(nu_path):
-        nu = load_table(nu_path)
-        plot_inset_by_scenario(nu, [c for c in NET_USE_CHANNELS if c in nu.columns],
-                               os.path.join(out_dir, f"NetUse_{STEP}_byScenario.png"),
-                               f"{expt_name}: Bednet_Using (diagnostic; overstates users)")
-    print(f"\nOutputs written to {out_dir}")
+    # ---- per-assumption sub folders ----
+    write_usage_subfolders(out_dir, dict(annual=annual, win=win, eff=eff,
+                                         ann_summ=ann_summ, series=series,
+                                         netuse=netuse_ts))
+    print(f"\nDone. Outputs in {out_dir}")
 
 
 # =============================================================================
@@ -1311,35 +1634,45 @@ def make_outputs(expt_name, work_dir):
 # =============================================================================
 
 def parse_args():
-    p = argparse.ArgumentParser(description="Analyze UWR IRS-vs-IG2 scenarios.")
+    p = argparse.ArgumentParser(description="Analyze UWR IRS vs IG2 scenario experiment.")
     p.add_argument("--skip-analysis", action="store_true",
-                   help="Skip stage 1 (idmtools) and re-run post-processing on existing csvs.")
+                   help="Skip stage 1 (idmtools) and re-run stage 2 on existing csvs.")
     p.add_argument("--experiment-id", default=None,
-                   help="Override the experiment ID (applies to the first experiment).")
+                   help="idmtools id of the SCENARIO experiment (overrides EXPERIMENTS).")
+    p.add_argument("--experiment-name", default=None,
+                   help="Name used for the output folder (default: from EXPERIMENTS).")
+    p.add_argument("--job-dir", default=None,
+                   help="Job directory (default: manifest.job_directory).")
     return p.parse_args()
 
 
 def main():
     args = parse_args()
-    import manifest
-    job_dir = manifest.job_directory
-    work_dir = job_dir
-    os.makedirs(work_dir, exist_ok=True)
 
-    experiments = dict(EXPERIMENTS)
     if args.experiment_id:
-        first = next(iter(experiments))
-        experiments[first] = args.experiment_id
+        exp_id = args.experiment_id.strip()
+        expt_name = args.experiment_name or next(
+            (n for n, i in EXPERIMENTS.items() if i == exp_id), f"experiment_{exp_id[:8]}")
+    else:
+        expt_name, exp_id = next(iter(EXPERIMENTS.items()))
+        if args.experiment_name:
+            expt_name = args.experiment_name
+
+    job_dir = args.job_dir
+    if job_dir is None:
+        try:
+            import manifest
+            job_dir = manifest.job_directory
+        except Exception as exc:
+            sys.exit(f"Could not read manifest.job_directory ({exc}); pass --job-dir.")
+
+    out_dir = output_dir(job_dir, expt_name)
+    os.makedirs(out_dir, exist_ok=True)
 
     if not args.skip_analysis:
-        for name, exp_id in experiments.items():
-            if not exp_id or not exp_id.strip() or exp_id.startswith("PUT-"):
-                raise SystemExit(f"Set a valid scenario experiment ID for {name}.")
-            run_analysis(name, exp_id.strip(), job_dir, work_dir)
+        run_analysis(expt_name, exp_id, job_dir, job_dir)
 
-    for name in experiments:
-        make_outputs(name, work_dir)
-    print(f"\nScenario analysis complete. Results: {work_dir}")
+    post_process(out_dir)
 
 
 if __name__ == "__main__":
